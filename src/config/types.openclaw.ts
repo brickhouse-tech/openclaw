@@ -226,6 +226,15 @@ export type OpenClawConfig = {
   mcp?: McpConfig;
   /** Network-level SSRF protection via an operator-managed forward proxy. */
   proxy?: ProxyConfig;
+  /**
+   * Dotted paths inside this config that doctor migrations must not rewrite.
+   * Once a path is locked, every descendant is also locked. Useful when an
+   * upstream legacy-config rewrite (e.g. `claude-cli/*` → `anthropic/*`) would
+   * clobber a deliberate setting the operator wants preserved.
+   *
+   * Example: `["agents.defaults.model", "agents.defaults.models"]`
+   */
+  locked?: string[];
 };
 
 /** Config input shape accepted before model provider defaults are fully materialized. */
