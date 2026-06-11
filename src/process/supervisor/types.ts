@@ -1,3 +1,4 @@
+// Process supervisor types describe supervised runs, states, and termination reasons.
 export type RunState = "starting" | "running" | "exiting" | "exited";
 
 export type TerminationReason =
@@ -52,6 +53,19 @@ export type ManagedRunStdin = {
   end: () => void;
   destroy?: () => void;
   destroyed?: boolean;
+  writable?: boolean;
+  writableEnded?: boolean;
+  writableFinished?: boolean;
+};
+
+export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
+  pid?: number;
+  stdin?: ManagedRunStdin;
+  onStdout: (listener: (chunk: string) => void) => void;
+  onStderr: (listener: (chunk: string) => void) => void;
+  wait: () => Promise<{ code: number | null; signal: WaitSignal }>;
+  kill: (signal?: NodeJS.Signals) => void;
+  dispose: () => void;
 };
 
 type SpawnBaseInput = {
@@ -68,6 +82,11 @@ type SpawnBaseInput = {
    * When false, stdout/stderr are streamed via callbacks only and not retained in RunExit payload.
    */
   captureOutput?: boolean;
+  /**
+   * Maximum retained stdout/stderr characters per stream when captureOutput is enabled.
+   * Streaming callbacks still receive full chunks.
+   */
+  maxCapturedOutputChars?: number;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
 };

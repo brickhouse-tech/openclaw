@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
-import * as os from "node:os";
+// Screen-recording payload helpers for node media commands.
 import * as path from "node:path";
 import { writeBase64ToFile } from "./nodes-camera.js";
+import { asRecord, asString, resolveTempPathParts } from "./nodes-media-utils.js";
 
+/** Validated payload returned by `nodes screen record` RPC calls. */
 export type ScreenRecordPayload = {
   format: string;
   base64: string;
@@ -12,14 +13,7 @@ export type ScreenRecordPayload = {
   hasAudio?: boolean;
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
+/** Validate and normalize an unknown screen-record payload. */
 export function parseScreenRecordPayload(value: unknown): ScreenRecordPayload {
   const obj = asRecord(value);
   const format = asString(obj.format);
@@ -37,13 +31,17 @@ export function parseScreenRecordPayload(value: unknown): ScreenRecordPayload {
   };
 }
 
+/** Build the temp output path for a screen recording artifact. */
 export function screenRecordTempPath(opts: { ext: string; tmpDir?: string; id?: string }) {
-  const tmpDir = opts.tmpDir ?? os.tmpdir();
-  const id = opts.id ?? randomUUID();
-  const ext = opts.ext.startsWith(".") ? opts.ext : `.${opts.ext}`;
+  const { tmpDir, id, ext } = resolveTempPathParts(opts);
   return path.join(tmpDir, `openclaw-screen-record-${id}${ext}`);
 }
 
-export async function writeScreenRecordToFile(filePath: string, base64: string) {
-  return writeBase64ToFile(filePath, base64);
+/** Decode and write a screen recording payload to disk. */
+export async function writeScreenRecordToFile(
+  filePath: string,
+  base64: string,
+  opts?: { maxBytes?: number },
+) {
+  return writeBase64ToFile(filePath, base64, opts);
 }

@@ -1,9 +1,9 @@
+// Update Clawtributors.Types script supports OpenClaw repository automation.
 export type MapConfig = {
   ensureLogins?: string[];
   displayName?: Record<string, string>;
   nameToLogin?: Record<string, string>;
   emailToLogin?: Record<string, string>;
-  placeholderAvatar?: string;
   seedCommit?: string;
 };
 
@@ -29,4 +29,8 @@ export type Entry = {
   html_url: string;
   avatar_url: string;
   lines: number;
+  commits: number;
+  prs: number;
+  score: number;
+  firstCommitDate: string;
 };

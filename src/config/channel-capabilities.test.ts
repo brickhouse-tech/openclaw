@@ -1,3 +1,4 @@
+// Covers channel capability config normalization and lookup behavior.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
@@ -125,6 +126,23 @@ describe("resolveChannelCapabilities", () => {
       }),
     ).toBeUndefined();
   });
+
+  it("handles Slack object-format capabilities gracefully", () => {
+    const cfg = {
+      channels: {
+        slack: {
+          capabilities: { interactiveReplies: true },
+        },
+      },
+    } as unknown as Partial<OpenClawConfig>;
+
+    expect(
+      resolveChannelCapabilities({
+        cfg,
+        channel: "slack",
+      }),
+    ).toBeUndefined();
+  });
 });
 
 const createStubPlugin = (id: string): ChannelPlugin => ({
@@ -148,18 +166,4 @@ const baseRegistry = createTestRegistry([
   { pluginId: "slack", source: "test", plugin: createStubPlugin("slack") },
 ]);
 
-const createMSTeamsPlugin = (): ChannelPlugin => ({
-  id: "msteams",
-  meta: {
-    id: "msteams",
-    label: "Microsoft Teams",
-    selectionLabel: "Microsoft Teams (Bot Framework)",
-    docsPath: "/channels/msteams",
-    blurb: "Bot Framework; enterprise support.",
-  },
-  capabilities: { chatTypes: ["direct"] },
-  config: {
-    listAccountIds: () => [],
-    resolveAccount: () => ({}),
-  },
-});
+const createMSTeamsPlugin = (): ChannelPlugin => createStubPlugin("msteams");

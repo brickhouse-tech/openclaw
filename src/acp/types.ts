@@ -1,27 +1,9 @@
-import type { SessionId } from "@agentclientprotocol/sdk";
+/** ACP server option re-exports and OpenClaw agent identity metadata. */
+export type { AcpProvenanceMode, AcpServerOptions, AcpSession } from "@openclaw/acp-core/types";
+export { normalizeAcpProvenanceMode } from "@openclaw/acp-core/types";
 import { VERSION } from "../version.js";
 
-export type AcpSession = {
-  sessionId: SessionId;
-  sessionKey: string;
-  cwd: string;
-  createdAt: number;
-  abortController: AbortController | null;
-  activeRunId: string | null;
-};
-
-export type AcpServerOptions = {
-  gatewayUrl?: string;
-  gatewayToken?: string;
-  gatewayPassword?: string;
-  defaultSessionKey?: string;
-  defaultSessionLabel?: string;
-  requireExistingSession?: boolean;
-  resetSession?: boolean;
-  prefixCwd?: boolean;
-  verbose?: boolean;
-};
-
+/** ACP agent identity advertised during protocol initialization. */
 export const ACP_AGENT_INFO = {
   name: "openclaw-acp",
   title: "OpenClaw ACP Gateway",

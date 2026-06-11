@@ -1,8 +1,10 @@
+// Process-local logging state shared by logger, console capture, and test reset helpers.
 export const loggingState = {
   cachedLogger: null as unknown,
   cachedSettings: null as unknown,
   cachedConsoleSettings: null as unknown,
   overrideSettings: null as unknown,
+  invalidEnvLogLevelValue: null as string | null,
   consolePatched: false,
   forceConsoleToStderr: false,
   consoleTimestampPrefix: false,

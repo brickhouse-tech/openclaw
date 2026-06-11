@@ -1,9 +1,11 @@
+// Daemon constant tests cover platform constants used by service installers.
 import { describe, expect, it } from "vitest";
 import {
   formatGatewayServiceDescription,
   GATEWAY_LAUNCH_AGENT_LABEL,
   GATEWAY_SYSTEMD_SERVICE_NAME,
   GATEWAY_WINDOWS_TASK_NAME,
+  LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES,
   normalizeGatewayProfile,
   resolveGatewayLaunchAgentLabel,
   resolveGatewayProfileSuffix,
@@ -126,5 +128,11 @@ describe("resolveGatewayServiceDescription", () => {
         environment: { OPENCLAW_SERVICE_VERSION: "remote" },
       }),
     ).toBe("OpenClaw Gateway (profile: work, vremote)");
+  });
+});
+
+describe("LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES", () => {
+  it("includes known pre-rebrand gateway unit names", () => {
+    expect(LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES).toContain("clawdbot-gateway");
   });
 });

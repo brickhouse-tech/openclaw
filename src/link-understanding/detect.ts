@@ -1,4 +1,5 @@
-import { isBlockedHostname, isPrivateIpAddress } from "../infra/net/ssrf.js";
+// Link detection extracts unique safe bare HTTP(S) URLs from inbound text while filtering SSRF targets.
+import { isBlockedHostnameOrIp } from "../infra/net/ssrf.js";
 import { DEFAULT_MAX_LINKS } from "./defaults.js";
 
 // Remove markdown link syntax so only bare URLs are considered.
@@ -22,7 +23,7 @@ function isAllowedUrl(raw: string): boolean {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    if (isBlockedHost(parsed.hostname)) {
+    if (isBlockedHostnameOrIp(parsed.hostname)) {
       return false;
     }
     return true;
@@ -31,16 +32,10 @@ function isAllowedUrl(raw: string): boolean {
   }
 }
 
-/** Block loopback, private, link-local, and metadata addresses. */
-function isBlockedHost(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase();
-  return (
-    normalized === "localhost.localdomain" ||
-    isBlockedHostname(normalized) ||
-    isPrivateIpAddress(normalized)
-  );
-}
-
+/**
+ * Extracts unique, SSRF-filtered bare HTTP(S) links from inbound text.
+ * Markdown links are ignored so display-only citations do not trigger fetches.
+ */
 export function extractLinksFromMessage(message: string, opts?: { maxLinks?: number }): string[] {
   const source = message?.trim();
   if (!source) {

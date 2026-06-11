@@ -1,15 +1,31 @@
+/**
+ * Reset command implementation.
+ *
+ * It removes selected config/state/workspace surfaces after confirmation and
+ * stops managed gateway services before deleting broader state.
+ */
 import { cancel, confirm, isCancel } from "@clack/prompts";
+import { selectStyled } from "../../packages/terminal-core/src/prompt-select-styled.js";
+import {
+  stylePromptMessage,
+  stylePromptTitle,
+} from "../../packages/terminal-core/src/prompt-style.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { isNixMode } from "../config/config.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { selectStyled } from "../terminal/prompt-select-styled.js";
-import { stylePromptMessage, stylePromptTitle } from "../terminal/prompt-style.js";
 import { resolveCleanupPlanFromDisk } from "./cleanup-plan.js";
-import { listAgentSessionDirs, removePath } from "./cleanup-utils.js";
+import {
+  listAgentSessionDirs,
+  removePath,
+  removeStateAndLinkedPaths,
+  removeWorkspaceAttestationPaths,
+  removeWorkspaceDirs,
+} from "./cleanup-utils.js";
 
 export type ResetScope = "config" | "config+creds+sessions" | "full";
 
+/** CLI options accepted by `openclaw reset`. */
 export type ResetOptions = {
   scope?: ResetScope;
   yes?: boolean;
@@ -19,10 +35,12 @@ export type ResetOptions = {
 
 async function stopGatewayIfRunning(runtime: RuntimeEnv) {
   if (isNixMode) {
+    // Nix mode owns service lifecycle outside OpenClaw-managed launchd/systemd
+    // installs, so reset should not try to stop a service it did not create.
     return;
   }
   const service = resolveGatewayService();
-  let loaded = false;
+  let loaded;
   try {
     loaded = await service.isLoaded({ env: process.env });
   } catch (err) {
@@ -39,6 +57,11 @@ async function stopGatewayIfRunning(runtime: RuntimeEnv) {
   }
 }
 
+function logBackupRecommendation(runtime: RuntimeEnv) {
+  runtime.log(`Recommended first: ${formatCliCommand("openclaw backup create")}`);
+}
+
+/** Runs the reset command for config, credential/session, or full state scopes. */
 export async function resetCommand(runtime: RuntimeEnv, opts: ResetOptions) {
   const interactive = !opts.nonInteractive;
   if (!interactive && !opts.yes) {
@@ -105,6 +128,7 @@ export async function resetCommand(runtime: RuntimeEnv, opts: ResetOptions) {
     resolveCleanupPlanFromDisk();
 
   if (scope !== "config") {
+    logBackupRecommendation(runtime);
     if (dryRun) {
       runtime.log("[dry-run] stop gateway service");
     } else {
@@ -121,6 +145,8 @@ export async function resetCommand(runtime: RuntimeEnv, opts: ResetOptions) {
     await removePath(configPath, runtime, { dryRun, label: configPath });
     await removePath(oauthDir, runtime, { dryRun, label: oauthDir });
     const sessionDirs = await listAgentSessionDirs(stateDir);
+    // Session stores are per-agent directories under state; enumerate them from
+    // disk so reset handles agents that are no longer present in config.
     for (const dir of sessionDirs) {
       await removePath(dir, runtime, { dryRun, label: dir });
     }
@@ -129,17 +155,15 @@ export async function resetCommand(runtime: RuntimeEnv, opts: ResetOptions) {
   }
 
   if (scope === "full") {
-    await removePath(stateDir, runtime, { dryRun, label: stateDir });
-    if (!configInsideState) {
-      await removePath(configPath, runtime, { dryRun, label: configPath });
-    }
-    if (!oauthInsideState) {
-      await removePath(oauthDir, runtime, { dryRun, label: oauthDir });
-    }
-    for (const workspace of workspaceDirs) {
-      await removePath(workspace, runtime, { dryRun, label: workspace });
-    }
+    await removeStateAndLinkedPaths(
+      { stateDir, configPath, oauthDir, configInsideState, oauthInsideState },
+      runtime,
+      { dryRun },
+    );
+    await removeWorkspaceDirs(workspaceDirs, runtime, { dryRun });
+    // Workspace attestations live beside workspace dirs and can outlive the
+    // workspace itself, so full reset cleans both surfaces.
+    await removeWorkspaceAttestationPaths(workspaceDirs, runtime, { dryRun });
     runtime.log(`Next: ${formatCliCommand("openclaw onboard --install-daemon")}`);
-    return;
   }
 }

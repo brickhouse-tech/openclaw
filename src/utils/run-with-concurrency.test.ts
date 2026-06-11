@@ -1,8 +1,13 @@
+// Concurrency runner tests cover bounded parallel task execution.
 import { describe, expect, it, vi } from "vitest";
 import { runTasksWithConcurrency } from "./run-with-concurrency.js";
 
 describe("runTasksWithConcurrency", () => {
   it("preserves task order with bounded worker count", async () => {
+    const flushMicrotasks = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    };
     let running = 0;
     let peak = 0;
     const resolvers: Array<(() => void) | undefined> = [];
@@ -17,20 +22,28 @@ describe("runTasksWithConcurrency", () => {
     });
 
     const resultPromise = runTasksWithConcurrency({ tasks, limit: 2 });
-    await vi.waitFor(() => {
-      expect(typeof resolvers[0]).toBe("function");
-      expect(typeof resolvers[1]).toBe("function");
-    });
-    resolvers[1]?.();
-    await vi.waitFor(() => {
-      expect(typeof resolvers[2]).toBe("function");
-    });
-    resolvers[0]?.();
-    await vi.waitFor(() => {
-      expect(typeof resolvers[3]).toBe("function");
-    });
-    resolvers[2]?.();
-    resolvers[3]?.();
+    const takeResolver = (index: number): (() => void) => {
+      const resolver = resolvers[index];
+      if (!resolver) {
+        throw new Error(`expected task ${index} to be running`);
+      }
+      return resolver;
+    };
+
+    await flushMicrotasks();
+    const resolveFirst = takeResolver(0);
+    const resolveSecond = takeResolver(1);
+
+    resolveSecond();
+    await flushMicrotasks();
+    const resolveThird = takeResolver(2);
+
+    resolveFirst();
+    await flushMicrotasks();
+    const resolveFourth = takeResolver(3);
+
+    resolveThird();
+    resolveFourth();
 
     const result = await resultPromise;
     expect(result.hasError).toBe(false);
@@ -71,6 +84,7 @@ describe("runTasksWithConcurrency", () => {
 
   it("continues after failures and reports the first one", async () => {
     const firstErr = new Error("first");
+    const secondErr = new Error("second");
     const onTaskError = vi.fn();
     const tasks = [
       async () => {
@@ -78,7 +92,7 @@ describe("runTasksWithConcurrency", () => {
       },
       async () => 20,
       async () => {
-        throw new Error("second");
+        throw secondErr;
       },
       async () => 40,
     ];
@@ -95,6 +109,6 @@ describe("runTasksWithConcurrency", () => {
     expect(result.results[3]).toBe(40);
     expect(onTaskError).toHaveBeenCalledTimes(2);
     expect(onTaskError).toHaveBeenNthCalledWith(1, firstErr, 0);
-    expect(onTaskError).toHaveBeenNthCalledWith(2, expect.any(Error), 2);
+    expect(onTaskError).toHaveBeenNthCalledWith(2, secondErr, 2);
   });
 });

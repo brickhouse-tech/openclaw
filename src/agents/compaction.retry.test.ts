@@ -1,19 +1,31 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import * as piCodingAgent from "@mariozechner/pi-coding-agent";
+// Covers retry behavior around compaction summary generation.
+import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
+import type { ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
+import * as agentSessions from "openclaw/plugin-sdk/agent-sessions";
+import type { AssistantMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { retryAsync } from "../infra/retry.js";
 
-// Mock the external generateSummary function
-vi.mock("@mariozechner/pi-coding-agent", async (importOriginal) => {
-  const actual = await importOriginal<typeof piCodingAgent>();
+vi.mock("openclaw/plugin-sdk/agent-sessions", async () => {
+  const actual = await vi.importActual<typeof agentSessions>("openclaw/plugin-sdk/agent-sessions");
   return {
     ...actual,
     generateSummary: vi.fn(),
   };
 });
 
-const mockGenerateSummary = vi.mocked(piCodingAgent.generateSummary);
+const mockGenerateSummary = vi.mocked(agentSessions.generateSummary);
+type MockGenerateSummaryCompat = (
+  currentMessages: AgentMessage[],
+  model: NonNullable<ExtensionContext["model"]>,
+  reserveTokens: number,
+  apiKey: string,
+  headers: Record<string, string> | undefined,
+  signal?: AbortSignal,
+  customInstructions?: string,
+  previousSummary?: string,
+) => Promise<string>;
+const mockGenerateSummaryCompat = mockGenerateSummary as unknown as MockGenerateSummaryCompat;
 
 describe("compaction retry integration", () => {
   beforeEach(() => {
@@ -24,36 +36,54 @@ describe("compaction retry integration", () => {
     vi.clearAllTimers();
     vi.useRealTimers();
   });
-  const testMessages = [
-    { role: "user", content: "Test message" },
-    { role: "assistant", content: "Test response" },
-  ] as unknown as AgentMessage[];
+  const testMessages: AgentMessage[] = [
+    {
+      role: "user",
+      content: "Test message",
+      timestamp: 1,
+    } satisfies UserMessage,
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Test response" }],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.4",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 2,
+    } satisfies AssistantMessage,
+  ];
 
   const testModel = {
     provider: "anthropic",
     model: "claude-3-opus",
   } as unknown as NonNullable<ExtensionContext["model"]>;
 
+  const invokeGenerateSummary = (signal = new AbortController().signal) =>
+    mockGenerateSummaryCompat(testMessages, testModel, 1000, "test-api-key", undefined, signal);
+
+  // This tests the retry helper with the same label/options used by compaction
+  // without invoking real provider calls.
+  const runSummaryRetry = (options: Parameters<typeof retryAsync>[1]) =>
+    retryAsync(() => invokeGenerateSummary(), options);
+
   it("should successfully call generateSummary with retry wrapper", async () => {
     mockGenerateSummary.mockResolvedValueOnce("Test summary");
 
-    const result = await retryAsync(
-      () =>
-        mockGenerateSummary(
-          testMessages,
-          testModel,
-          1000,
-          "test-api-key",
-          new AbortController().signal,
-        ),
-      {
-        attempts: 3,
-        minDelayMs: 500,
-        maxDelayMs: 5000,
-        jitter: 0.2,
-        label: "compaction/generateSummary",
-      },
-    );
+    const result = await runSummaryRetry({
+      attempts: 3,
+      minDelayMs: 500,
+      maxDelayMs: 5000,
+      jitter: 0.2,
+      label: "compaction/generateSummary",
+    });
 
     expect(result).toBe("Test summary");
     expect(mockGenerateSummary).toHaveBeenCalledTimes(1);
@@ -64,22 +94,12 @@ describe("compaction retry integration", () => {
       .mockRejectedValueOnce(new Error("Network timeout"))
       .mockResolvedValueOnce("Success after retry");
 
-    const result = await retryAsync(
-      () =>
-        mockGenerateSummary(
-          testMessages,
-          testModel,
-          1000,
-          "test-api-key",
-          new AbortController().signal,
-        ),
-      {
-        attempts: 3,
-        minDelayMs: 0,
-        maxDelayMs: 0,
-        label: "compaction/generateSummary",
-      },
-    );
+    const result = await runSummaryRetry({
+      attempts: 3,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      label: "compaction/generateSummary",
+    });
 
     expect(result).toBe("Success after retry");
     expect(mockGenerateSummary).toHaveBeenCalledTimes(2);
@@ -93,25 +113,16 @@ describe("compaction retry integration", () => {
     mockGenerateSummary.mockRejectedValueOnce(abortErr);
 
     await expect(
-      retryAsync(
-        () =>
-          mockGenerateSummary(
-            testMessages,
-            testModel,
-            1000,
-            "test-api-key",
-            new AbortController().signal,
-          ),
-        {
-          attempts: 3,
-          minDelayMs: 0,
-          label: "compaction/generateSummary",
-          shouldRetry: (err: unknown) => !(err instanceof Error && err.name === "AbortError"),
-        },
-      ),
+      retryAsync(() => invokeGenerateSummary(), {
+        attempts: 3,
+        minDelayMs: 0,
+        label: "compaction/generateSummary",
+        shouldRetry: (err: unknown) => !(err instanceof Error && err.name === "AbortError"),
+      }),
     ).rejects.toThrow("aborted");
 
-    // Should NOT retry on user cancellation (AbortError filtered by shouldRetry)
+    // User cancellation is terminal; retrying would continue work the caller
+    // explicitly aborted.
     expect(mockGenerateSummary).toHaveBeenCalledTimes(1);
   });
 
@@ -119,22 +130,12 @@ describe("compaction retry integration", () => {
     mockGenerateSummary.mockRejectedValue(new Error("Persistent API error"));
 
     await expect(
-      retryAsync(
-        () =>
-          mockGenerateSummary(
-            testMessages,
-            testModel,
-            1000,
-            "test-api-key",
-            new AbortController().signal,
-          ),
-        {
-          attempts: 3,
-          minDelayMs: 0,
-          maxDelayMs: 0,
-          label: "compaction/generateSummary",
-        },
-      ),
+      runSummaryRetry({
+        attempts: 3,
+        minDelayMs: 0,
+        maxDelayMs: 0,
+        label: "compaction/generateSummary",
+      }),
     ).rejects.toThrow("Persistent API error");
 
     expect(mockGenerateSummary).toHaveBeenCalledTimes(3);
@@ -149,31 +150,21 @@ describe("compaction retry integration", () => {
       .mockResolvedValueOnce("Success on 3rd attempt");
 
     const delays: number[] = [];
-    const promise = retryAsync(
-      () =>
-        mockGenerateSummary(
-          testMessages,
-          testModel,
-          1000,
-          "test-api-key",
-          new AbortController().signal,
-        ),
-      {
-        attempts: 3,
-        minDelayMs: 500,
-        maxDelayMs: 5000,
-        jitter: 0,
-        label: "compaction/generateSummary",
-        onRetry: (info) => delays.push(info.delayMs),
-      },
-    );
+    const promise = runSummaryRetry({
+      attempts: 3,
+      minDelayMs: 500,
+      maxDelayMs: 5000,
+      jitter: 0,
+      label: "compaction/generateSummary",
+      onRetry: (info) => delays.push(info.delayMs),
+    });
 
     await vi.runAllTimersAsync();
     const result = await promise;
 
     expect(result).toBe("Success on 3rd attempt");
     expect(mockGenerateSummary).toHaveBeenCalledTimes(3);
-    // First retry: 500ms, second retry: 1000ms
+    // First retry: 500ms, second retry: 1000ms.
     expect(delays[0]).toBe(500);
     expect(delays[1]).toBe(1000);
 

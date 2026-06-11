@@ -1,4 +1,6 @@
-import { isPlainObject } from "../utils.js";
+// Applies JSON merge-patch updates to config-like objects.
+import { isPlainObject } from "../infra/plain-object.js";
+import { isBlockedObjectKey } from "./prototype-keys.js";
 
 type PlainObject = Record<string, unknown>;
 
@@ -58,6 +60,12 @@ function mergeObjectArraysById(
   return merged;
 }
 
+/**
+ * Applies an RFC 7396-style object merge patch with OpenClaw config safeguards.
+ *
+ * Non-object patches replace the base, `null` deletes keys, blocked prototype
+ * keys are ignored, and id-keyed arrays may merge when the caller opts in.
+ */
 export function applyMergePatch(
   base: unknown,
   patch: unknown,
@@ -70,11 +78,15 @@ export function applyMergePatch(
   const result: PlainObject = isPlainObject(base) ? { ...base } : {};
 
   for (const [key, value] of Object.entries(patch)) {
+    if (isBlockedObjectKey(key)) {
+      continue;
+    }
     if (value === null) {
       delete result[key];
       continue;
     }
     if (options.mergeObjectArraysById && Array.isArray(result[key]) && Array.isArray(value)) {
+      // Config arrays like agents/plugins can patch by id; non-id arrays keep RFC replacement.
       const mergedArray = mergeObjectArraysById(result[key] as unknown[], value, options);
       if (mergedArray) {
         result[key] = mergedArray;

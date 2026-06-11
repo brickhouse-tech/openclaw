@@ -1,5 +1,14 @@
+// Control UI shared URL helpers.
+// Normalizes base paths and avatar URLs for browser/gateway surfaces.
+import {
+  isAvatarHttpUrl,
+  isAvatarImageDataUrl,
+  looksLikeAvatarPath,
+} from "../shared/avatar-policy.js";
+
 const CONTROL_UI_AVATAR_PREFIX = "/avatar";
 
+/** Normalizes a Control UI base path to either "" or a leading-slash path without trailing slash. */
 export function normalizeControlUiBasePath(basePath?: string): string {
   if (!basePath) {
     return "";
@@ -20,19 +29,14 @@ export function normalizeControlUiBasePath(basePath?: string): string {
   return normalized;
 }
 
+/** Builds the gateway-served avatar URL for an agent under the provided base path. */
 export function buildControlUiAvatarUrl(basePath: string, agentId: string): string {
   return basePath
     ? `${basePath}${CONTROL_UI_AVATAR_PREFIX}/${agentId}`
     : `${CONTROL_UI_AVATAR_PREFIX}/${agentId}`;
 }
 
-function looksLikeLocalAvatarPath(value: string): boolean {
-  if (/[\\/]/.test(value)) {
-    return true;
-  }
-  return /\.(png|jpe?g|gif|webp|svg|ico)$/i.test(value);
-}
-
+/** Resolves the assistant avatar URL that Control UI should render for the active agent. */
 export function resolveAssistantAvatarUrl(params: {
   avatar?: string | null;
   agentId?: string | null;
@@ -42,7 +46,7 @@ export function resolveAssistantAvatarUrl(params: {
   if (!avatar) {
     return undefined;
   }
-  if (/^https?:\/\//i.test(avatar) || /^data:image\//i.test(avatar)) {
+  if (isAvatarHttpUrl(avatar) || isAvatarImageDataUrl(avatar)) {
     return avatar;
   }
 
@@ -60,10 +64,13 @@ export function resolveAssistantAvatarUrl(params: {
   if (!params.agentId) {
     return avatar;
   }
-  if (looksLikeLocalAvatarPath(avatar)) {
+  // Local filesystem-ish avatar config is exposed through the gateway avatar
+  // route instead of being handed directly to the browser.
+  if (looksLikeAvatarPath(avatar)) {
     return buildControlUiAvatarUrl(basePath, params.agentId);
   }
   return avatar;
 }
 
+/** URL prefix for gateway-served Control UI avatar assets. */
 export { CONTROL_UI_AVATAR_PREFIX };

@@ -5,35 +5,26 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { isToolAllowedByPolicies } from "../agents/pi-tools.policy.js";
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import {
-  resolveSandboxConfigForAgent,
-  resolveSandboxToolPolicyForAgent,
-} from "../agents/sandbox.js";
-import type { SandboxToolPolicy } from "../agents/sandbox/types.js";
-import { loadWorkspaceSkillEntries } from "../agents/skills.js";
-import { resolveToolProfilePolicy } from "../agents/tool-policy.js";
-import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeStringEntries,
+  normalizeTrimmedStringList,
+  uniqueStrings,
+} from "@openclaw/normalization-core/string-normalization";
+import { resolveAuthProfileDatabaseFilePaths } from "../agents/auth-profiles/sqlite.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { MANIFEST_KEY } from "../compat/legacy-names.js";
-import { resolveNativeSkillsEnabled } from "../config/commands.js";
 import type { OpenClawConfig, ConfigFileSnapshot } from "../config/config.js";
-import { createConfigIO } from "../config/config.js";
 import { collectIncludePathsRecursive } from "../config/includes-scan.js";
 import { resolveOAuthDir } from "../config/paths.js";
-import type { AgentToolsConfig } from "../config/types.tools.js";
-import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import {
-  formatPermissionDetail,
-  formatPermissionRemediation,
-  inspectPathPermissions,
-  safeStat,
-} from "./audit-fs.js";
-import { pickSandboxToolPolicy } from "./audit-tool-policy.js";
+import type { SkillScanFinding } from "../skills/security/scanner.js";
+import { shouldIgnoreInstalledPluginDirName } from "./installed-plugin-dirs.js";
 import { extensionUsesSkippedScannerPath, isPathInside } from "./scan-paths.js";
-import type { SkillScanFinding } from "./skill-scanner.js";
-import * as skillScanner from "./skill-scanner.js";
 import type { ExecFn } from "./windows-acl.js";
 
 export type SecurityAuditFinding = {
@@ -44,15 +35,131 @@ export type SecurityAuditFinding = {
   remediation?: string;
 };
 
+type CollectPluginsTrustFindingsParams = Parameters<
+  typeof import("./audit-plugins-trust.js").collectPluginsTrustFindings
+>[0];
+type SkillScanSummary = Awaited<
+  ReturnType<typeof import("../skills/security/scanner.js").scanDirectoryWithSummary>
+>;
+type ExecDockerRawFn = (
+  args: string[],
+  opts?: { allowFailure?: boolean; input?: Buffer | string; signal?: AbortSignal },
+) => Promise<import("../agents/sandbox/docker.js").ExecDockerRawResult>;
+
+const DEFAULT_SANDBOX_BROWSER_DOCKER_PROBE_TIMEOUT_MS = 5000;
+
+type CodeSafetySummaryCache = Map<string, Promise<unknown>>;
+let skillsModulePromise: Promise<typeof import("../skills/loading/workspace.js")> | undefined;
+let configModulePromise: Promise<typeof import("../config/config.js")> | undefined;
+let agentScopeModulePromise: Promise<typeof import("../agents/agent-scope.js")> | undefined;
+let agentWorkspaceDirsModulePromise:
+  | Promise<typeof import("../agents/workspace-dirs.js")>
+  | undefined;
+let skillSourceModulePromise: Promise<typeof import("../skills/loading/source.js")> | undefined;
+let sandboxDockerModulePromise: Promise<typeof import("../agents/sandbox/docker.js")> | undefined;
+let sandboxConstantsModulePromise:
+  | Promise<typeof import("../agents/sandbox/constants.js")>
+  | undefined;
+let auditPluginsTrustModulePromise: Promise<typeof import("./audit-plugins-trust.js")> | undefined;
+let auditFsModulePromise: Promise<typeof import("./audit-fs.js")> | undefined;
+let skillScannerModulePromise: Promise<typeof import("../skills/security/scanner.js")> | undefined;
+
+function loadSkillsModule() {
+  skillsModulePromise ??= import("../skills/loading/workspace.js");
+  return skillsModulePromise;
+}
+
+function loadConfigModule() {
+  configModulePromise ??= import("../config/config.js");
+  return configModulePromise;
+}
+
+function loadAuditFsModule() {
+  auditFsModulePromise ??= import("./audit-fs.js");
+  return auditFsModulePromise;
+}
+
+function loadAgentScopeModule() {
+  agentScopeModulePromise ??= import("../agents/agent-scope.js");
+  return agentScopeModulePromise;
+}
+
+function loadAgentWorkspaceDirsModule() {
+  agentWorkspaceDirsModulePromise ??= import("../agents/workspace-dirs.js");
+  return agentWorkspaceDirsModulePromise;
+}
+
+function loadSkillSourceModule() {
+  skillSourceModulePromise ??= import("../skills/loading/source.js");
+  return skillSourceModulePromise;
+}
+
+function loadSkillScannerModule() {
+  skillScannerModulePromise ??= import("../skills/security/scanner.js");
+  return skillScannerModulePromise;
+}
+
+async function loadExecDockerRaw(): Promise<ExecDockerRawFn> {
+  sandboxDockerModulePromise ??= import("../agents/sandbox/docker.js");
+  const { execDockerRaw } = await sandboxDockerModulePromise;
+  return execDockerRaw;
+}
+
+async function loadSandboxBrowserSecurityHashEpoch(): Promise<string> {
+  sandboxConstantsModulePromise ??= import("../agents/sandbox/constants.js");
+  const { SANDBOX_BROWSER_SECURITY_HASH_EPOCH } = await sandboxConstantsModulePromise;
+  return SANDBOX_BROWSER_SECURITY_HASH_EPOCH;
+}
+
+export async function collectPluginsTrustFindings(
+  params: CollectPluginsTrustFindingsParams,
+): Promise<SecurityAuditFinding[]> {
+  auditPluginsTrustModulePromise ??= import("./audit-plugins-trust.js");
+  const { collectPluginsTrustFindings: collect } = await auditPluginsTrustModulePromise;
+  return await collect(params);
+}
+
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+async function safeStat(targetPath: string): Promise<{
+  ok: boolean;
+  isSymlink: boolean;
+  isDir: boolean;
+  mode: number | null;
+  uid: number | null;
+  gid: number | null;
+  error?: string;
+}> {
+  try {
+    const lst = await fs.lstat(targetPath);
+    return {
+      ok: true,
+      isSymlink: lst.isSymbolicLink(),
+      isDir: lst.isDirectory(),
+      mode: typeof lst.mode === "number" ? lst.mode : null,
+      uid: typeof lst.uid === "number" ? lst.uid : null,
+      gid: typeof lst.gid === "number" ? lst.gid : null,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      isSymlink: false,
+      isDir: false,
+      mode: null,
+      uid: null,
+      gid: null,
+      error: String(err),
+    };
+  }
+}
 
 function expandTilde(p: string, env: NodeJS.ProcessEnv): string | null {
   if (!p.startsWith("~")) {
     return p;
   }
-  const home = typeof env.HOME === "string" && env.HOME.trim() ? env.HOME.trim() : null;
+  const home = normalizeOptionalString(env.HOME) ?? null;
   if (!home) {
     return null;
   }
@@ -72,14 +179,24 @@ async function readPluginManifestExtensions(pluginPath: string): Promise<string[
     return [];
   }
 
-  const parsed = JSON.parse(raw) as Partial<
-    Record<typeof MANIFEST_KEY, { extensions?: unknown }>
-  > | null;
+  let parsed: Partial<Record<typeof MANIFEST_KEY, { extensions?: unknown }>> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<
+      Record<typeof MANIFEST_KEY, { extensions?: unknown }>
+    > | null;
+  } catch (err) {
+    // Re-throw so callers can surface a security finding for malformed manifests.
+    // A malicious plugin could use a malformed package.json to hide declared
+    // extension entrypoints from deep scan — callers must not silently drop them.
+    throw new Error(`Failed to parse plugin manifest at ${manifestPath}: ${String(err)}`, {
+      cause: err,
+    });
+  }
   const extensions = parsed?.[MANIFEST_KEY]?.extensions;
   if (!Array.isArray(extensions)) {
     return [];
   }
-  return extensions.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
+  return normalizeTrimmedStringList(extensions);
 }
 
 function formatCodeSafetyDetails(findings: SkillScanFinding[], rootDir: string): string {
@@ -96,279 +213,355 @@ function formatCodeSafetyDetails(findings: SkillScanFinding[], rootDir: string):
     .join("\n");
 }
 
-function resolveToolPolicies(params: {
-  cfg: OpenClawConfig;
-  agentTools?: AgentToolsConfig;
-  sandboxMode?: "off" | "non-main" | "all";
-  agentId?: string | null;
-}): Array<SandboxToolPolicy | undefined> {
-  const profile = params.agentTools?.profile ?? params.cfg.tools?.profile;
-  const profilePolicy = resolveToolProfilePolicy(profile);
-  const policies: Array<SandboxToolPolicy | undefined> = [
-    profilePolicy,
-    pickSandboxToolPolicy(params.cfg.tools ?? undefined),
-    pickSandboxToolPolicy(params.agentTools),
-  ];
-  if (params.sandboxMode === "all") {
-    policies.push(resolveSandboxToolPolicyForAgent(params.cfg, params.agentId ?? undefined));
+async function listInstalledPluginDirs(params: {
+  stateDir: string;
+  onReadError?: (error: unknown) => void;
+}): Promise<{ extensionsDir: string; pluginDirs: string[] }> {
+  const extensionsDir = path.join(params.stateDir, "extensions");
+  const st = await safeStat(extensionsDir);
+  if (!st.ok || !st.isDir) {
+    return { extensionsDir, pluginDirs: [] };
   }
-  return policies;
-}
-
-function normalizePluginIdSet(entries: string[]): Set<string> {
-  return new Set(entries.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
-}
-
-function resolveEnabledExtensionPluginIds(params: {
-  cfg: OpenClawConfig;
-  pluginDirs: string[];
-}): string[] {
-  const normalized = normalizePluginsConfig(params.cfg.plugins);
-  if (!normalized.enabled) {
+  const entries = await fs.readdir(extensionsDir, { withFileTypes: true }).catch((err: unknown) => {
+    params.onReadError?.(err);
     return [];
-  }
-
-  const allowSet = normalizePluginIdSet(normalized.allow);
-  const denySet = normalizePluginIdSet(normalized.deny);
-  const entryById = new Map<string, { enabled?: boolean }>();
-  for (const [id, entry] of Object.entries(normalized.entries)) {
-    entryById.set(id.trim().toLowerCase(), entry);
-  }
-
-  const enabled: string[] = [];
-  for (const id of params.pluginDirs) {
-    const normalizedId = id.trim().toLowerCase();
-    if (!normalizedId) {
-      continue;
-    }
-    if (denySet.has(normalizedId)) {
-      continue;
-    }
-    if (allowSet.size > 0 && !allowSet.has(normalizedId)) {
-      continue;
-    }
-    if (entryById.get(normalizedId)?.enabled === false) {
-      continue;
-    }
-    enabled.push(normalizedId);
-  }
-  return enabled;
+  });
+  const pluginDirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => !shouldIgnoreInstalledPluginDirName(name))
+    .filter(Boolean);
+  return { extensionsDir, pluginDirs };
 }
 
-function collectAllowEntries(config?: { allow?: string[]; alsoAllow?: string[] }): string[] {
-  const out: string[] = [];
-  if (Array.isArray(config?.allow)) {
-    out.push(...config.allow);
-  }
-  if (Array.isArray(config?.alsoAllow)) {
-    out.push(...config.alsoAllow);
-  }
-  return out.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+function buildCodeSafetySummaryCacheKey(params: {
+  dirPath: string;
+  includeFiles?: string[];
+}): string {
+  const includeFiles = normalizeStringEntries(params.includeFiles);
+  const includeKey = includeFiles.length > 0 ? includeFiles.toSorted().join("\u0000") : "";
+  return `${params.dirPath}\u0000${includeKey}`;
 }
 
-function hasExplicitPluginAllow(params: {
-  allowEntries: string[];
-  enabledPluginIds: Set<string>;
-}): boolean {
-  return params.allowEntries.some(
-    (entry) => entry === "group:plugins" || params.enabledPluginIds.has(entry),
-  );
-}
-
-function hasProviderPluginAllow(params: {
-  byProvider?: Record<string, { allow?: string[]; alsoAllow?: string[]; deny?: string[] }>;
-  enabledPluginIds: Set<string>;
-}): boolean {
-  if (!params.byProvider) {
-    return false;
-  }
-  for (const policy of Object.values(params.byProvider)) {
-    if (
-      hasExplicitPluginAllow({
-        allowEntries: collectAllowEntries(policy),
-        enabledPluginIds: params.enabledPluginIds,
-      })
-    ) {
-      return true;
+async function getCodeSafetySummary(params: {
+  dirPath: string;
+  includeFiles?: string[];
+  summaryCache?: CodeSafetySummaryCache;
+}): Promise<SkillScanSummary> {
+  const cacheKey = buildCodeSafetySummaryCacheKey({
+    dirPath: params.dirPath,
+    includeFiles: params.includeFiles,
+  });
+  const cache = params.summaryCache;
+  if (cache) {
+    const hit = cache.get(cacheKey);
+    if (hit) {
+      return (await hit) as SkillScanSummary;
     }
+    const skillScanner = await loadSkillScannerModule();
+    const pending = skillScanner.scanDirectoryWithSummary(params.dirPath, {
+      includeFiles: params.includeFiles,
+    });
+    cache.set(cacheKey, pending);
+    return await pending;
   }
-  return false;
+  const skillScanner = await loadSkillScannerModule();
+  return await skillScanner.scanDirectoryWithSummary(params.dirPath, {
+    includeFiles: params.includeFiles,
+  });
 }
 
 // --------------------------------------------------------------------------
 // Exported collectors
 // --------------------------------------------------------------------------
 
-export async function collectPluginsTrustFindings(params: {
-  cfg: OpenClawConfig;
-  stateDir: string;
+function normalizeDockerLabelValue(raw: string | undefined): string | null {
+  const trimmed = normalizeOptionalString(raw) ?? "";
+  if (!trimmed || trimmed === "<no value>") {
+    return null;
+  }
+  return trimmed;
+}
+
+class DockerProbeTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Docker probe timed out after ${timeoutMs}ms`);
+    this.name = "DockerProbeTimeoutError";
+  }
+}
+
+function normalizeDockerProbeTimeoutMs(timeoutMs: number | undefined): number {
+  if (Number.isFinite(timeoutMs) && timeoutMs !== undefined) {
+    return Math.max(250, Math.floor(timeoutMs));
+  }
+  return DEFAULT_SANDBOX_BROWSER_DOCKER_PROBE_TIMEOUT_MS;
+}
+
+async function withDockerProbeTimeout<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setNodeTimeout> | undefined;
+  let timedOut = false;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setNodeTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new DockerProbeTimeoutError(timeoutMs));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), timeoutPromise]);
+  } catch (err) {
+    if (timedOut || controller.signal.aborted) {
+      throw new DockerProbeTimeoutError(timeoutMs);
+    }
+    throw err;
+  } finally {
+    if (timeout) {
+      clearNodeTimeout(timeout);
+    }
+  }
+}
+
+function isDockerProbeTimeoutError(error: unknown): boolean {
+  return error instanceof DockerProbeTimeoutError;
+}
+
+async function listSandboxBrowserContainers(params: {
+  execDockerRawFn: ExecDockerRawFn;
+  timeoutMs: number;
+  onTimeout?: () => void;
+}): Promise<string[] | null> {
+  try {
+    const result = await withDockerProbeTimeout(params.timeoutMs, (signal) =>
+      params.execDockerRawFn(
+        ["ps", "-a", "--filter", "label=openclaw.sandboxBrowser=1", "--format", "{{.Names}}"],
+        { allowFailure: true, signal },
+      ),
+    );
+    if (result.code !== 0) {
+      return null;
+    }
+    return normalizeStringEntries(result.stdout.toString("utf8").split(/\r?\n/));
+  } catch (err) {
+    if (isDockerProbeTimeoutError(err)) {
+      params.onTimeout?.();
+    }
+    return null;
+  }
+}
+
+async function readSandboxBrowserHashLabels(params: {
+  containerName: string;
+  execDockerRawFn: ExecDockerRawFn;
+  timeoutMs: number;
+  onTimeout?: () => void;
+}): Promise<{ configHash: string | null; epoch: string | null } | null> {
+  try {
+    const result = await withDockerProbeTimeout(params.timeoutMs, (signal) =>
+      params.execDockerRawFn(
+        [
+          "inspect",
+          "-f",
+          '{{ index .Config.Labels "openclaw.configHash" }}\t{{ index .Config.Labels "openclaw.browserConfigEpoch" }}',
+          params.containerName,
+        ],
+        { allowFailure: true, signal },
+      ),
+    );
+    if (result.code !== 0) {
+      return null;
+    }
+    const [hashRaw, epochRaw] = result.stdout.toString("utf8").split("\t");
+    return {
+      configHash: normalizeDockerLabelValue(hashRaw),
+      epoch: normalizeDockerLabelValue(epochRaw),
+    };
+  } catch (err) {
+    if (isDockerProbeTimeoutError(err)) {
+      params.onTimeout?.();
+    }
+    return null;
+  }
+}
+
+function parsePublishedHostFromDockerPortLine(line: string): string | null {
+  const trimmed = normalizeOptionalString(line) ?? "";
+  const rhs = trimmed.includes("->")
+    ? (normalizeOptionalString(trimmed.split("->").at(-1)) ?? "")
+    : trimmed;
+  if (!rhs) {
+    return null;
+  }
+  const bracketHost = rhs.match(/^\[([^\]]+)\]:\d+$/);
+  if (bracketHost?.[1]) {
+    return bracketHost[1];
+  }
+  const hostPort = rhs.match(/^([^:]+):\d+$/);
+  if (hostPort?.[1]) {
+    return hostPort[1];
+  }
+  return null;
+}
+
+function isLoopbackPublishHost(host: string): boolean {
+  const normalized = normalizeOptionalLowercaseString(host);
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
+}
+
+async function readSandboxBrowserPortMappings(params: {
+  containerName: string;
+  execDockerRawFn: ExecDockerRawFn;
+  timeoutMs: number;
+  onTimeout?: () => void;
+}): Promise<string[] | null> {
+  try {
+    const result = await withDockerProbeTimeout(params.timeoutMs, (signal) =>
+      params.execDockerRawFn(["port", params.containerName], {
+        allowFailure: true,
+        signal,
+      }),
+    );
+    if (result.code !== 0) {
+      return null;
+    }
+    return normalizeStringEntries(result.stdout.toString("utf8").split(/\r?\n/));
+  } catch (err) {
+    if (isDockerProbeTimeoutError(err)) {
+      params.onTimeout?.();
+    }
+    return null;
+  }
+}
+
+export async function collectSandboxBrowserHashLabelFindings(params?: {
+  execDockerRawFn?: ExecDockerRawFn;
+  timeoutMs?: number;
 }): Promise<SecurityAuditFinding[]> {
   const findings: SecurityAuditFinding[] = [];
-  const extensionsDir = path.join(params.stateDir, "extensions");
-  const st = await safeStat(extensionsDir);
-  if (!st.ok || !st.isDir) {
+  const timeoutMs = normalizeDockerProbeTimeoutMs(params?.timeoutMs);
+  let timedOut = false;
+  const markTimedOut = () => {
+    timedOut = true;
+  };
+  const [execFn, browserHashEpoch] = await Promise.all([
+    params?.execDockerRawFn ? Promise.resolve(params.execDockerRawFn) : loadExecDockerRaw(),
+    loadSandboxBrowserSecurityHashEpoch(),
+  ]);
+  const containers = await listSandboxBrowserContainers({
+    execDockerRawFn: execFn,
+    timeoutMs,
+    onTimeout: markTimedOut,
+  });
+  if (!containers || containers.length === 0) {
+    if (timedOut) {
+      findings.push(buildSandboxBrowserDockerProbeTimeoutFinding(timeoutMs));
+    }
     return findings;
   }
 
-  const entries = await fs.readdir(extensionsDir, { withFileTypes: true }).catch(() => []);
-  const pluginDirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .filter(Boolean);
-  if (pluginDirs.length === 0) {
-    return findings;
+  const missingHash: string[] = [];
+  const staleEpoch: string[] = [];
+  const nonLoopbackPublished: string[] = [];
+
+  for (const containerName of containers) {
+    const labels = await readSandboxBrowserHashLabels({
+      containerName,
+      execDockerRawFn: execFn,
+      timeoutMs,
+      onTimeout: markTimedOut,
+    });
+    if (timedOut) {
+      break;
+    }
+    if (!labels) {
+      continue;
+    }
+    if (!labels.configHash) {
+      missingHash.push(containerName);
+    }
+    if (labels.epoch !== browserHashEpoch) {
+      staleEpoch.push(containerName);
+    }
+    const portMappings = await readSandboxBrowserPortMappings({
+      containerName,
+      execDockerRawFn: execFn,
+      timeoutMs,
+      onTimeout: markTimedOut,
+    });
+    if (timedOut) {
+      break;
+    }
+    if (!portMappings?.length) {
+      continue;
+    }
+    const exposedMappings = portMappings.filter((line) => {
+      const host = parsePublishedHostFromDockerPortLine(line);
+      return Boolean(host && !isLoopbackPublishHost(host));
+    });
+    if (exposedMappings.length > 0) {
+      nonLoopbackPublished.push(`${containerName} (${exposedMappings.join("; ")})`);
+    }
   }
 
-  const allow = params.cfg.plugins?.allow;
-  const allowConfigured = Array.isArray(allow) && allow.length > 0;
-  if (!allowConfigured) {
-    const hasString = (value: unknown) => typeof value === "string" && value.trim().length > 0;
-    const hasAccountStringKey = (account: unknown, key: string) =>
-      Boolean(
-        account &&
-        typeof account === "object" &&
-        hasString((account as Record<string, unknown>)[key]),
-      );
-
-    const discordConfigured =
-      hasString(params.cfg.channels?.discord?.token) ||
-      Boolean(
-        params.cfg.channels?.discord?.accounts &&
-        Object.values(params.cfg.channels.discord.accounts).some((a) =>
-          hasAccountStringKey(a, "token"),
-        ),
-      ) ||
-      hasString(process.env.DISCORD_BOT_TOKEN);
-
-    const telegramConfigured =
-      hasString(params.cfg.channels?.telegram?.botToken) ||
-      hasString(params.cfg.channels?.telegram?.tokenFile) ||
-      Boolean(
-        params.cfg.channels?.telegram?.accounts &&
-        Object.values(params.cfg.channels.telegram.accounts).some(
-          (a) => hasAccountStringKey(a, "botToken") || hasAccountStringKey(a, "tokenFile"),
-        ),
-      ) ||
-      hasString(process.env.TELEGRAM_BOT_TOKEN);
-
-    const slackConfigured =
-      hasString(params.cfg.channels?.slack?.botToken) ||
-      hasString(params.cfg.channels?.slack?.appToken) ||
-      Boolean(
-        params.cfg.channels?.slack?.accounts &&
-        Object.values(params.cfg.channels.slack.accounts).some(
-          (a) => hasAccountStringKey(a, "botToken") || hasAccountStringKey(a, "appToken"),
-        ),
-      ) ||
-      hasString(process.env.SLACK_BOT_TOKEN) ||
-      hasString(process.env.SLACK_APP_TOKEN);
-
-    const skillCommandsLikelyExposed =
-      (discordConfigured &&
-        resolveNativeSkillsEnabled({
-          providerId: "discord",
-          providerSetting: params.cfg.channels?.discord?.commands?.nativeSkills,
-          globalSetting: params.cfg.commands?.nativeSkills,
-        })) ||
-      (telegramConfigured &&
-        resolveNativeSkillsEnabled({
-          providerId: "telegram",
-          providerSetting: params.cfg.channels?.telegram?.commands?.nativeSkills,
-          globalSetting: params.cfg.commands?.nativeSkills,
-        })) ||
-      (slackConfigured &&
-        resolveNativeSkillsEnabled({
-          providerId: "slack",
-          providerSetting: params.cfg.channels?.slack?.commands?.nativeSkills,
-          globalSetting: params.cfg.commands?.nativeSkills,
-        }));
-
+  if (missingHash.length > 0) {
     findings.push({
-      checkId: "plugins.extensions_no_allowlist",
-      severity: skillCommandsLikelyExposed ? "critical" : "warn",
-      title: "Extensions exist but plugins.allow is not set",
+      checkId: "sandbox.browser_container.hash_label_missing",
+      severity: "warn",
+      title: "Sandbox browser container missing config hash label",
       detail:
-        `Found ${pluginDirs.length} extension(s) under ${extensionsDir}. Without plugins.allow, any discovered plugin id may load (depending on config and plugin behavior).` +
-        (skillCommandsLikelyExposed
-          ? "\nNative skill commands are enabled on at least one configured chat surface; treat unpinned/unallowlisted extensions as high risk."
-          : ""),
-      remediation: "Set plugins.allow to an explicit list of plugin ids you trust.",
+        `Containers: ${missingHash.join(", ")}. ` +
+        "These browser containers predate hash-based drift checks and may miss security remediations until recreated.",
+      remediation: `${formatCliCommand("openclaw sandbox recreate --browser --all")} (add --force to skip prompt).`,
     });
   }
 
-  const enabledExtensionPluginIds = resolveEnabledExtensionPluginIds({
-    cfg: params.cfg,
-    pluginDirs,
-  });
-  if (enabledExtensionPluginIds.length > 0) {
-    const enabledPluginSet = new Set(enabledExtensionPluginIds);
-    const contexts: Array<{
-      label: string;
-      agentId?: string;
-      tools?: AgentToolsConfig;
-    }> = [{ label: "default" }];
-    for (const entry of params.cfg.agents?.list ?? []) {
-      if (!entry || typeof entry !== "object" || typeof entry.id !== "string") {
-        continue;
-      }
-      contexts.push({
-        label: `agents.list.${entry.id}`,
-        agentId: entry.id,
-        tools: entry.tools,
-      });
-    }
+  if (staleEpoch.length > 0) {
+    findings.push({
+      checkId: "sandbox.browser_container.hash_epoch_stale",
+      severity: "warn",
+      title: "Sandbox browser container hash epoch is stale",
+      detail:
+        `Containers: ${staleEpoch.join(", ")}. ` +
+        `Expected openclaw.browserConfigEpoch=${browserHashEpoch}.`,
+      remediation: `${formatCliCommand("openclaw sandbox recreate --browser --all")} (add --force to skip prompt).`,
+    });
+  }
 
-    const permissiveContexts: string[] = [];
-    for (const context of contexts) {
-      const profile = context.tools?.profile ?? params.cfg.tools?.profile;
-      const restrictiveProfile = Boolean(resolveToolProfilePolicy(profile));
-      const sandboxMode = resolveSandboxConfigForAgent(params.cfg, context.agentId).mode;
-      const policies = resolveToolPolicies({
-        cfg: params.cfg,
-        agentTools: context.tools,
-        sandboxMode,
-        agentId: context.agentId,
-      });
-      const broadPolicy = isToolAllowedByPolicies("__openclaw_plugin_probe__", policies);
-      const explicitPluginAllow =
-        !restrictiveProfile &&
-        (hasExplicitPluginAllow({
-          allowEntries: collectAllowEntries(params.cfg.tools),
-          enabledPluginIds: enabledPluginSet,
-        }) ||
-          hasProviderPluginAllow({
-            byProvider: params.cfg.tools?.byProvider,
-            enabledPluginIds: enabledPluginSet,
-          }) ||
-          hasExplicitPluginAllow({
-            allowEntries: collectAllowEntries(context.tools),
-            enabledPluginIds: enabledPluginSet,
-          }) ||
-          hasProviderPluginAllow({
-            byProvider: context.tools?.byProvider,
-            enabledPluginIds: enabledPluginSet,
-          }));
+  if (nonLoopbackPublished.length > 0) {
+    findings.push({
+      checkId: "sandbox.browser_container.non_loopback_publish",
+      severity: "critical",
+      title: "Sandbox browser container publishes ports on non-loopback interfaces",
+      detail:
+        `Containers: ${nonLoopbackPublished.join(", ")}. ` +
+        "Sandbox browser observer/control ports should stay loopback-only to avoid unintended remote access.",
+      remediation:
+        `${formatCliCommand("openclaw sandbox recreate --browser --all")} (add --force to skip prompt), ` +
+        "then verify published ports are bound to 127.0.0.1.",
+    });
+  }
 
-      if (broadPolicy || explicitPluginAllow) {
-        permissiveContexts.push(context.label);
-      }
-    }
-
-    if (permissiveContexts.length > 0) {
-      findings.push({
-        checkId: "plugins.tools_reachable_permissive_policy",
-        severity: "warn",
-        title: "Extension plugin tools may be reachable under permissive tool policy",
-        detail:
-          `Enabled extension plugins: ${enabledExtensionPluginIds.join(", ")}.\n` +
-          `Permissive tool policy contexts:\n${permissiveContexts.map((entry) => `- ${entry}`).join("\n")}`,
-        remediation:
-          "Use restrictive profiles (`minimal`/`coding`) or explicit tool allowlists that exclude plugin tools for agents handling untrusted input.",
-      });
-    }
+  if (timedOut) {
+    findings.push(buildSandboxBrowserDockerProbeTimeoutFinding(timeoutMs));
   }
 
   return findings;
+}
+
+function buildSandboxBrowserDockerProbeTimeoutFinding(timeoutMs: number): SecurityAuditFinding {
+  return {
+    checkId: "sandbox.browser_container.docker_probe_timeout",
+    severity: "warn",
+    title: "Sandbox browser Docker audit probe timed out",
+    detail:
+      `Docker did not answer within ${timeoutMs}ms while checking sandbox browser containers. ` +
+      "OpenClaw skipped any remaining sandbox browser container drift checks for this status run.",
+    remediation:
+      "Retry after Docker is responsive, or recreate sandbox browser containers if drift is suspected.",
+  };
 }
 
 export async function collectIncludeFilePermFindings(params: {
@@ -391,8 +584,10 @@ export async function collectIncludeFilePermFindings(params: {
     return findings;
   }
 
+  const { formatPermissionDetail, formatPermissionRemediation, inspectPathPermissions } =
+    await loadAuditFsModule();
+
   for (const p of includePaths) {
-    // eslint-disable-next-line no-await-in-loop
     const perms = await inspectPathPermissions(p, {
       env: params.env,
       platform: params.platform,
@@ -458,6 +653,8 @@ export async function collectStateDeepFilesystemFindings(params: {
 }): Promise<SecurityAuditFinding[]> {
   const findings: SecurityAuditFinding[] = [];
   const oauthDir = resolveOAuthDir(params.env, params.stateDir);
+  const { formatPermissionDetail, formatPermissionRemediation, inspectPathPermissions } =
+    await loadAuditFsModule();
 
   const oauthPerms = await inspectPathPermissions(oauthDir, {
     env: params.env,
@@ -498,55 +695,67 @@ export async function collectStateDeepFilesystemFindings(params: {
 
   const agentIds = Array.isArray(params.cfg.agents?.list)
     ? params.cfg.agents?.list
-        .map((a) => (a && typeof a === "object" && typeof a.id === "string" ? a.id.trim() : ""))
+        .map(
+          (a) =>
+            normalizeOptionalString(
+              a && typeof a === "object" ? (a as { id?: unknown }).id : undefined,
+            ) ?? "",
+        )
         .filter(Boolean)
     : [];
+  const { resolveDefaultAgentId } = await loadAgentScopeModule();
   const defaultAgentId = resolveDefaultAgentId(params.cfg);
-  const ids = Array.from(new Set([defaultAgentId, ...agentIds])).map((id) => normalizeAgentId(id));
+  const ids = uniqueStrings([defaultAgentId, ...agentIds]).map((id) => normalizeAgentId(id));
 
   for (const agentId of ids) {
     const agentDir = path.join(params.stateDir, "agents", agentId, "agent");
-    const authPath = path.join(agentDir, "auth-profiles.json");
-    // eslint-disable-next-line no-await-in-loop
-    const authPerms = await inspectPathPermissions(authPath, {
-      env: params.env,
-      platform: params.platform,
-      exec: params.execIcacls,
-    });
-    if (authPerms.ok) {
-      if (authPerms.worldWritable || authPerms.groupWritable) {
-        findings.push({
-          checkId: "fs.auth_profiles.perms_writable",
-          severity: "critical",
-          title: "auth-profiles.json is writable by others",
-          detail: `${formatPermissionDetail(authPath, authPerms)}; another user could inject credentials.`,
-          remediation: formatPermissionRemediation({
-            targetPath: authPath,
-            perms: authPerms,
-            isDir: false,
-            posixMode: 0o600,
-            env: params.env,
-          }),
-        });
-      } else if (authPerms.worldReadable || authPerms.groupReadable) {
-        findings.push({
-          checkId: "fs.auth_profiles.perms_readable",
-          severity: "warn",
-          title: "auth-profiles.json is readable by others",
-          detail: `${formatPermissionDetail(authPath, authPerms)}; auth-profiles.json contains API keys and OAuth tokens.`,
-          remediation: formatPermissionRemediation({
-            targetPath: authPath,
-            perms: authPerms,
-            isDir: false,
-            posixMode: 0o600,
-            env: params.env,
-          }),
-        });
+    const authTargets = [
+      { path: path.join(agentDir, "auth-profiles.json"), label: "legacy auth-profiles.json" },
+      ...resolveAuthProfileDatabaseFilePaths(agentDir).map((targetPath) => ({
+        path: targetPath,
+        label: "auth profile SQLite store",
+      })),
+    ];
+    for (const authTarget of authTargets) {
+      const authPerms = await inspectPathPermissions(authTarget.path, {
+        env: params.env,
+        platform: params.platform,
+        exec: params.execIcacls,
+      });
+      if (authPerms.ok) {
+        if (authPerms.worldWritable || authPerms.groupWritable) {
+          findings.push({
+            checkId: "fs.auth_profiles.perms_writable",
+            severity: "critical",
+            title: `${authTarget.label} is writable by others`,
+            detail: `${formatPermissionDetail(authTarget.path, authPerms)}; another user could inject credentials.`,
+            remediation: formatPermissionRemediation({
+              targetPath: authTarget.path,
+              perms: authPerms,
+              isDir: false,
+              posixMode: 0o600,
+              env: params.env,
+            }),
+          });
+        } else if (authPerms.worldReadable || authPerms.groupReadable) {
+          findings.push({
+            checkId: "fs.auth_profiles.perms_readable",
+            severity: "warn",
+            title: `${authTarget.label} is readable by others`,
+            detail: `${formatPermissionDetail(authTarget.path, authPerms)}; auth profile storage contains API keys and OAuth tokens.`,
+            remediation: formatPermissionRemediation({
+              targetPath: authTarget.path,
+              perms: authPerms,
+              isDir: false,
+              posixMode: 0o600,
+              env: params.env,
+            }),
+          });
+        }
       }
     }
 
     const storePath = path.join(params.stateDir, "agents", agentId, "sessions", "sessions.json");
-    // eslint-disable-next-line no-await-in-loop
     const storePerms = await inspectPathPermissions(storePath, {
       env: params.env,
       platform: params.platform,
@@ -571,8 +780,7 @@ export async function collectStateDeepFilesystemFindings(params: {
     }
   }
 
-  const logFile =
-    typeof params.cfg.logging?.file === "string" ? params.cfg.logging.file.trim() : "";
+  const logFile = normalizeOptionalString(params.cfg.logging?.file) ?? "";
   if (logFile) {
     const expanded = logFile.startsWith("~") ? expandTilde(logFile, params.env) : logFile;
     if (expanded) {
@@ -609,6 +817,7 @@ export async function readConfigSnapshotForAudit(params: {
   env: NodeJS.ProcessEnv;
   configPath: string;
 }): Promise<ConfigFileSnapshot> {
+  const { createConfigIO } = await loadConfigModule();
   return await createConfigIO({
     env: params.env,
     configPath: params.configPath,
@@ -617,30 +826,44 @@ export async function readConfigSnapshotForAudit(params: {
 
 export async function collectPluginsCodeSafetyFindings(params: {
   stateDir: string;
+  summaryCache?: CodeSafetySummaryCache;
 }): Promise<SecurityAuditFinding[]> {
   const findings: SecurityAuditFinding[] = [];
-  const extensionsDir = path.join(params.stateDir, "extensions");
-  const st = await safeStat(extensionsDir);
-  if (!st.ok || !st.isDir) {
-    return findings;
-  }
-
-  const entries = await fs.readdir(extensionsDir, { withFileTypes: true }).catch((err) => {
-    findings.push({
-      checkId: "plugins.code_safety.scan_failed",
-      severity: "warn",
-      title: "Plugin extensions directory scan failed",
-      detail: `Static code scan could not list extensions directory: ${String(err)}`,
-      remediation:
-        "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
-    });
-    return [];
+  const { extensionsDir, pluginDirs } = await listInstalledPluginDirs({
+    stateDir: params.stateDir,
+    onReadError: (err) => {
+      findings.push({
+        checkId: "plugins.code_safety.scan_failed",
+        severity: "warn",
+        title: "Plugin extensions directory scan failed",
+        detail: `Static code scan could not list extensions directory: ${String(err)}`,
+        remediation:
+          "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
+      });
+    },
   });
-  const pluginDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 
   for (const pluginName of pluginDirs) {
     const pluginPath = path.join(extensionsDir, pluginName);
-    const extensionEntries = await readPluginManifestExtensions(pluginPath).catch(() => []);
+    let extensionEntries: string[] = [];
+    try {
+      extensionEntries = await readPluginManifestExtensions(pluginPath);
+    } catch (manifestErr) {
+      // Malformed package.json — surface a warning so the user investigates.
+      // A plugin could deliberately corrupt its manifest to hide declared
+      // extension entrypoints from the deep code scanner.
+      findings.push({
+        checkId: "plugins.code_safety.manifest_parse_error",
+        severity: "warn",
+        title: `Plugin "${pluginName}" has a malformed package.json`,
+        detail:
+          `Could not parse plugin manifest: ${String(manifestErr)}.\n` +
+          "The extension entrypoint list is unavailable. Deep scan will cover the plugin directory but may miss entries declared via `openclaw.extensions`.",
+        remediation:
+          "Inspect the plugin package.json for syntax errors. If the plugin is untrusted, remove it from your OpenClaw extensions state directory.",
+      });
+      // Continue — getCodeSafetySummary below still scans the plugin directory
+    }
     const forcedScanEntries: string[] = [];
     const escapedEntries: string[] = [];
 
@@ -673,21 +896,21 @@ export async function collectPluginsCodeSafetyFindings(params: {
       });
     }
 
-    const summary = await skillScanner
-      .scanDirectoryWithSummary(pluginPath, {
-        includeFiles: forcedScanEntries,
-      })
-      .catch((err) => {
-        findings.push({
-          checkId: "plugins.code_safety.scan_failed",
-          severity: "warn",
-          title: `Plugin "${pluginName}" code scan failed`,
-          detail: `Static code scan could not complete: ${String(err)}`,
-          remediation:
-            "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
-        });
-        return null;
+    const summary = await getCodeSafetySummary({
+      dirPath: pluginPath,
+      includeFiles: forcedScanEntries,
+      summaryCache: params.summaryCache,
+    }).catch((err: unknown) => {
+      findings.push({
+        checkId: "plugins.code_safety.scan_failed",
+        severity: "warn",
+        title: `Plugin "${pluginName}" code scan failed`,
+        detail: `Static code scan could not complete: ${String(err)}`,
+        remediation:
+          "Check file permissions and plugin layout, then rerun `openclaw security audit --deep`.",
       });
+      return null;
+    });
     if (!summary) {
       continue;
     }
@@ -724,16 +947,22 @@ export async function collectPluginsCodeSafetyFindings(params: {
 export async function collectInstalledSkillsCodeSafetyFindings(params: {
   cfg: OpenClawConfig;
   stateDir: string;
+  summaryCache?: CodeSafetySummaryCache;
 }): Promise<SecurityAuditFinding[]> {
   const findings: SecurityAuditFinding[] = [];
   const pluginExtensionsDir = path.join(params.stateDir, "extensions");
   const scannedSkillDirs = new Set<string>();
+  const [{ listAgentWorkspaceDirs }, { resolveSkillSource }] = await Promise.all([
+    loadAgentWorkspaceDirsModule(),
+    loadSkillSourceModule(),
+  ]);
   const workspaceDirs = listAgentWorkspaceDirs(params.cfg);
+  const { loadWorkspaceSkillEntries } = await loadSkillsModule();
 
   for (const workspaceDir of workspaceDirs) {
     const entries = loadWorkspaceSkillEntries(workspaceDir, { config: params.cfg });
     for (const entry of entries) {
-      if (entry.skill.source === "openclaw-bundled") {
+      if (resolveSkillSource(entry.skill) === "openclaw-bundled") {
         continue;
       }
 
@@ -748,7 +977,10 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
       scannedSkillDirs.add(skillDir);
 
       const skillName = entry.skill.name;
-      const summary = await skillScanner.scanDirectoryWithSummary(skillDir).catch((err) => {
+      const summary = await getCodeSafetySummary({
+        dirPath: skillDir,
+        summaryCache: params.summaryCache,
+      }).catch((err: unknown) => {
         findings.push({
           checkId: "skills.code_safety.scan_failed",
           severity: "warn",

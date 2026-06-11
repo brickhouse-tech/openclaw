@@ -1,9 +1,13 @@
-import { normalizeChannelId } from "../channels/plugins/index.js";
+// Normalizes channel capability metadata from config and plugin manifests.
+import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
+import { normalizeAnyChannelId } from "../channels/registry.js";
+import { resolveAccountEntry } from "../routing/account-lookup.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import type { OpenClawConfig } from "./config.js";
+import type { SlackCapabilitiesConfig } from "./types.slack.js";
 import type { TelegramCapabilitiesConfig } from "./types.telegram.js";
 
-type CapabilitiesConfig = TelegramCapabilitiesConfig;
+type CapabilitiesConfig = TelegramCapabilitiesConfig | SlackCapabilitiesConfig;
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string");
@@ -14,7 +18,7 @@ function normalizeCapabilities(capabilities: CapabilitiesConfig | undefined): st
   if (!isStringArray(capabilities)) {
     return undefined;
   }
-  const normalized = capabilities.map((entry) => entry.trim()).filter(Boolean);
+  const normalized = normalizeStringEntries(capabilities);
   return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -32,15 +36,9 @@ function resolveAccountCapabilities(params: {
 
   const accounts = cfg.accounts;
   if (accounts && typeof accounts === "object") {
-    const direct = accounts[normalizedAccountId];
-    if (direct) {
-      return normalizeCapabilities(direct.capabilities) ?? normalizeCapabilities(cfg.capabilities);
-    }
-    const matchKey = Object.keys(accounts).find(
-      (key) => key.toLowerCase() === normalizedAccountId.toLowerCase(),
-    );
-    const match = matchKey ? accounts[matchKey] : undefined;
+    const match = resolveAccountEntry(accounts, normalizedAccountId);
     if (match) {
+      // Account capabilities override provider capabilities; empty/object account values fall back.
       return normalizeCapabilities(match.capabilities) ?? normalizeCapabilities(cfg.capabilities);
     }
   }
@@ -48,13 +46,14 @@ function resolveAccountCapabilities(params: {
   return normalizeCapabilities(cfg.capabilities);
 }
 
+/** Resolves normalized string capabilities for a channel/account config pair. */
 export function resolveChannelCapabilities(params: {
   cfg?: Partial<OpenClawConfig>;
   channel?: string | null;
   accountId?: string | null;
 }): string[] | undefined {
   const cfg = params.cfg;
-  const channel = normalizeChannelId(params.channel);
+  const channel = normalizeAnyChannelId(params.channel);
   if (!cfg || !channel) {
     return undefined;
   }
