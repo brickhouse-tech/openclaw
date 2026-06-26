@@ -495,6 +495,9 @@ const CommitmentsSchema = z
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
+    // Dotted config paths that doctor migrations must not rewrite; locking a
+    // path also locks every descendant. See OpenClawConfig.locked for details.
+    locked: z.array(z.string()).optional(),
     meta: z
       .object({
         lastTouchedVersion: z.string().optional(),
