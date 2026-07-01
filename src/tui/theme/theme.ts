@@ -143,6 +143,7 @@ export const theme = {
   fg: fg(palette.text),
   assistantText: (text: string) => text,
   dim: fg(palette.dim),
+  color: (hex: string) => (text: string) => chalk.hex(hex)(text),
   accent: fg(palette.accent),
   accentSoft: fg(palette.accentSoft),
   success: fg(palette.success),

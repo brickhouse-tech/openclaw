@@ -810,6 +810,32 @@ describe("tui command handlers", () => {
     });
   });
 
+  it("sets colorTag for /color with a value", async () => {
+    const patchSession = vi.fn().mockResolvedValue({});
+    const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
+    const { handleCommand } = createHarness({ patchSession, refreshSessionInfo });
+
+    await handleCommand("/color cyan");
+
+    expect(patchSession).toHaveBeenCalledWith({
+      key: "agent:main:main",
+      colorTag: "cyan",
+    });
+    expect(refreshSessionInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears colorTag for /color default", async () => {
+    const patchSession = vi.fn().mockResolvedValue({});
+    const { handleCommand } = createHarness({ patchSession });
+
+    await handleCommand("/color default");
+
+    expect(patchSession).toHaveBeenCalledWith({
+      key: "agent:main:main",
+      colorTag: null,
+    });
+  });
+
   it("refreshes session info for /trace without reloading history", async () => {
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);

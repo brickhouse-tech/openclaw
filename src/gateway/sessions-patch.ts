@@ -35,6 +35,7 @@ import {
   resolveSupportedThinkingLevel,
 } from "../auto-reply/thinking.js";
 import type { SessionEntry } from "../config/sessions.js";
+import { parseSessionColor } from "../config/sessions/session-color.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeExecTarget } from "../infra/exec-approvals.js";
 import {
@@ -178,6 +179,7 @@ export async function applySessionsPatchToStore(params: {
   if (existing && !existing.sessionId) {
     delete next.label;
     delete next.displayName;
+    delete next.colorTag;
   }
 
   if ("spawnedBy" in patch) {
@@ -379,6 +381,23 @@ export async function applySessionsPatchToStore(params: {
         delete next.displayName;
       } else {
         next.displayName = trimmed.slice(0, 200);
+      }
+    }
+  }
+
+  if ("colorTag" in patch) {
+    const raw = patch.colorTag;
+    if (raw === null) {
+      delete next.colorTag;
+    } else if (raw !== undefined) {
+      const parsed = parseSessionColor(raw);
+      if (!parsed.ok) {
+        return invalid(parsed.error);
+      }
+      if (parsed.value === null) {
+        delete next.colorTag;
+      } else {
+        next.colorTag = parsed.value;
       }
     }
   }
