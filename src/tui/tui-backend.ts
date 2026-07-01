@@ -72,6 +72,7 @@ export type TuiSessionList = {
       | "goal"
       | "modelProvider"
       | "displayName"
+      | "colorTag"
     > & {
       key: string;
       sessionId?: string;

@@ -94,6 +94,7 @@ export type SessionInfo = {
   responseUsage?: ResponseUsageMode;
   updatedAt?: number | null;
   displayName?: string;
+  colorTag?: string;
 };
 
 export type SessionScope = "per-sender" | "global";

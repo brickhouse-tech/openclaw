@@ -17,6 +17,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import type { CommandEntry } from "../../packages/gateway-protocol/src/index.js";
 import { resolveAgentIdByWorkspacePath, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
+import { sessionColorHex } from "../config/sessions/session-color.js";
 import { isChatStopCommandText } from "../gateway/chat-abort.js";
 import { registerUncaughtExceptionHandler } from "../infra/unhandled-rejections.js";
 import { getWindowsSystem32ExePath } from "../infra/windows-install-roots.js";
@@ -1244,19 +1245,26 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     const reasoningLabel =
       reasoning === "on" ? "reasoning" : reasoning === "stream" ? "reasoning:stream" : null;
     const hostLabel = resolveTuiFooterHostLabel({ config, connectionUrl: client.connection.url });
+    const goalFooter = formatGoalFooter(sessionInfo.goal);
+    const dim = (text: string) => theme.dim(text);
+    // Tint the session segment with its color tag; all other parts stay dim.
+    // Per-part styling (rather than one outer dim) keeps the color from being
+    // clobbered by the surrounding dim reset codes.
+    const colorHex = sessionColorHex(sessionInfo.colorTag);
+    const sessionSegment = `session ${sessionLabel}`;
     const footerParts = [
-      hostLabel,
-      `agent ${agentLabel}`,
-      `session ${sessionLabel}`,
-      modelLabel,
-      formatGoalFooter(sessionInfo.goal),
-      think !== "off" ? `think ${think}` : null,
-      fastLabel,
-      verbose !== "off" ? `verbose ${verbose}` : null,
-      reasoningLabel,
-      tokens,
+      hostLabel ? dim(hostLabel) : null,
+      dim(`agent ${agentLabel}`),
+      colorHex ? theme.color(colorHex)(sessionSegment) : dim(sessionSegment),
+      dim(modelLabel),
+      goalFooter ? dim(goalFooter) : null,
+      think !== "off" ? dim(`think ${think}`) : null,
+      fastLabel ? dim(fastLabel) : null,
+      verbose !== "off" ? dim(`verbose ${verbose}`) : null,
+      reasoningLabel ? dim(reasoningLabel) : null,
+      dim(tokens),
     ].filter(Boolean);
-    footer.setText(theme.dim(footerParts.join(" | ")));
+    footer.setText(footerParts.join(dim(" | ")));
   };
 
   const { openOverlay, closeOverlay } = createOverlayHandlers(tui, editor);

@@ -400,6 +400,8 @@ export type SessionEntry = {
   claudeCliSessionId?: string;
   label?: string;
   displayName?: string;
+  /** Session color tag: a named palette entry (e.g. "cyan") or canonical "#rrggbb". */
+  colorTag?: string;
   channel?: string;
   groupId?: string;
   subject?: string;
