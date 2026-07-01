@@ -15,6 +15,7 @@ const ELEVATED_LEVELS = ["on", "off", "ask", "full"];
 const ACTIVATION_LEVELS = ["mention", "always"];
 const USAGE_FOOTER_LEVELS = ["off", "tokens", "full"];
 const COLOR_LEVELS = [...SESSION_COLOR_NAMES, "default"];
+const COLOR_ARGUMENT_HINT = `[${[...COLOR_LEVELS, "rgb(r,g,b)"].join("|")}]`;
 
 export type ParsedCommand = {
   name: string;
@@ -104,6 +105,7 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
     {
       name: "color",
       description: "Set session color tag (default clears it)",
+      argumentHint: COLOR_ARGUMENT_HINT,
       getArgumentCompletions: colorCompletions,
     },
     {
