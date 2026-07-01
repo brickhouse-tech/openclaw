@@ -486,11 +486,27 @@ export function createCommandHandlers(context: CommandHandlerContext) {
             ...currentSessionPatchTarget(),
             displayName: title ? title : null,
           });
-          chatLog.addSystem(title ? `renamed session to: ${title}` : "session name cleared");
+          chatLog.addSystem(title ? `Session renamed to: ${title}` : "Session name cleared");
           applySessionInfoFromPatch(result);
           await refreshSessionInfo();
         } catch (err) {
           chatLog.addSystem(`rename failed: ${String(err)}`);
+        }
+        break;
+      }
+      case "color": {
+        const value = args.trim();
+        const clear = !value || value.toLowerCase() === "default";
+        try {
+          const result = await client.patchSession({
+            ...currentSessionPatchTarget(),
+            colorTag: clear ? null : value,
+          });
+          chatLog.addSystem(clear ? "Session color cleared" : `Session color set to: ${value}`);
+          applySessionInfoFromPatch(result);
+          await refreshSessionInfo();
+        } catch (err) {
+          chatLog.addSystem(`color failed: ${String(err)}`);
         }
         break;
       }

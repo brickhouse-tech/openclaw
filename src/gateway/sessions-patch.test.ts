@@ -354,6 +354,42 @@ describe("gateway sessions patch", () => {
     expect(entry.displayName).toBeUndefined();
   });
 
+  test("stores a named color tag", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, colorTag: "cyan" },
+      }),
+    );
+    expect(entry.colorTag).toBe("cyan");
+  });
+
+  test("normalizes a custom color tag to canonical hex", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, colorTag: "rgb(0, 170, 255)" },
+      }),
+    );
+    expect(entry.colorTag).toBe("#00aaff");
+  });
+
+  test("rejects an invalid color tag", async () => {
+    const result = await runPatch({
+      patch: { key: MAIN_SESSION_KEY, colorTag: "chartreuse" },
+    });
+    expectPatchError(result, "invalid color");
+  });
+
+  test("clears colorTag when patch sets null", async () => {
+    const store = mainStoreEntry({ colorTag: "cyan" });
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, colorTag: null },
+      }),
+    );
+    expect(entry.colorTag).toBeUndefined();
+  });
+
   test("persists verboseLevel=full", async () => {
     const entry = expectPatchOk(
       await runPatch({

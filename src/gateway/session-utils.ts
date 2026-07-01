@@ -2153,6 +2153,7 @@ export function buildGatewaySessionRow(params: {
     kind: classifySessionKey(key, entry),
     label: entry?.label,
     displayName,
+    colorTag: entry?.colorTag,
     derivedTitle,
     lastMessagePreview,
     channel,

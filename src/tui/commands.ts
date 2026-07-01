@@ -4,6 +4,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import type { CommandEntry } from "../../packages/gateway-protocol/src/index.js";
 import { listChatCommands, listChatCommandsForConfig } from "../auto-reply/commands-registry.js";
 import { formatThinkingLevels, listThinkingLevelLabels } from "../auto-reply/thinking.js";
+import { SESSION_COLOR_NAMES } from "../config/sessions/session-color.js";
 import type { OpenClawConfig } from "../config/types.js";
 
 const VERBOSE_LEVELS = ["on", "off"];
@@ -13,6 +14,7 @@ const REASONING_LEVELS = ["on", "off"];
 const ELEVATED_LEVELS = ["on", "off", "ask", "full"];
 const ACTIVATION_LEVELS = ["mention", "always"];
 const USAGE_FOOTER_LEVELS = ["off", "tokens", "full"];
+const COLOR_LEVELS = [...SESSION_COLOR_NAMES, "default"];
 
 export type ParsedCommand = {
   name: string;
@@ -87,6 +89,7 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
   const usageCompletions = createLevelCompletion(USAGE_FOOTER_LEVELS);
   const elevatedCompletions = createLevelCompletion(ELEVATED_LEVELS);
   const activationCompletions = createLevelCompletion(ACTIVATION_LEVELS);
+  const colorCompletions = createLevelCompletion(COLOR_LEVELS);
   const commands: SlashCommand[] = [
     { name: "help", description: "Show slash command help" },
     { name: "gateway-status", description: "Show gateway status summary" },
@@ -98,6 +101,11 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
     { name: "session", description: "Switch session (or open picker)" },
     { name: "sessions", description: "Open session picker" },
     { name: "rename", description: "Rename this session (no args clears the name)" },
+    {
+      name: "color",
+      description: "Set session color tag (default clears it)",
+      getArgumentCompletions: colorCompletions,
+    },
     {
       name: "model",
       description: "Set model (or open picker)",
@@ -192,6 +200,7 @@ export function helpText(options: SlashCommandOptions = {}): string {
     "/crestodian [request]",
     "/session <key> (or /sessions)",
     "/rename <title>",
+    `/color <${COLOR_LEVELS.join("|")}|#hex|rgb(r,g,b)>`,
     "/model <provider/model> (or /models)",
     `/think <${thinkLevels}>`,
     "/fast <status|auto|on|off>",
