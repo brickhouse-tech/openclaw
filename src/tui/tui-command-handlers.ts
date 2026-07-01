@@ -456,6 +456,21 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       case "sessions":
         await openSessionSelector();
         break;
+      case "rename": {
+        const title = args.trim();
+        try {
+          const result = await client.patchSession({
+            ...currentSessionPatchTarget(),
+            displayName: title ? title : null,
+          });
+          chatLog.addSystem(title ? `renamed session to: ${title}` : "session name cleared");
+          applySessionInfoFromPatch(result);
+          await refreshSessionInfo();
+        } catch (err) {
+          chatLog.addSystem(`rename failed: ${String(err)}`);
+        }
+        break;
+      }
       case "model":
         if (!args) {
           await openModelSelector();

@@ -368,6 +368,21 @@ export async function applySessionsPatchToStore(params: {
     }
   }
 
+  if ("displayName" in patch) {
+    const raw = patch.displayName;
+    if (raw === null) {
+      // Clear the human title; deriveSessionTitle falls back to subject/first message.
+      delete next.displayName;
+    } else if (raw !== undefined) {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        delete next.displayName;
+      } else {
+        next.displayName = trimmed.slice(0, 200);
+      }
+    }
+  }
+
   if ("thinkingLevel" in patch) {
     const raw = patch.thinkingLevel;
     if (raw === null) {

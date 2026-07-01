@@ -97,6 +97,7 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
     { name: "crestodian", description: "Return to Crestodian" },
     { name: "session", description: "Switch session (or open picker)" },
     { name: "sessions", description: "Open session picker" },
+    { name: "rename", description: "Rename this session (no args clears the name)" },
     {
       name: "model",
       description: "Set model (or open picker)",
@@ -190,6 +191,7 @@ export function helpText(options: SlashCommandOptions = {}): string {
     "/agent <id> (or /agents)",
     "/crestodian [request]",
     "/session <key> (or /sessions)",
+    "/rename <title>",
     "/model <provider/model> (or /models)",
     `/think <${thinkLevels}>`,
     "/fast <status|on|off>",
