@@ -1019,6 +1019,39 @@ describe("tui command handlers", () => {
     expect(clearTools).not.toHaveBeenCalled();
   });
 
+  it("sets displayName for /rename with a title", async () => {
+    const patchResult = { displayName: "Trading Desk" };
+    const patchSession = vi.fn().mockResolvedValue(patchResult);
+    const applySessionInfoFromPatch = vi.fn();
+    const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
+    const { handleCommand } = createHarness({
+      patchSession,
+      applySessionInfoFromPatch,
+      refreshSessionInfo,
+    });
+
+    await handleCommand("/rename Trading Desk");
+
+    expect(patchSession).toHaveBeenCalledWith({
+      key: "agent:main:main",
+      displayName: "Trading Desk",
+    });
+    expect(applySessionInfoFromPatch).toHaveBeenCalledWith(patchResult);
+    expect(refreshSessionInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears displayName for /rename with no args", async () => {
+    const patchSession = vi.fn().mockResolvedValue({});
+    const { handleCommand } = createHarness({ patchSession });
+
+    await handleCommand("/rename");
+
+    expect(patchSession).toHaveBeenCalledWith({
+      key: "agent:main:main",
+      displayName: null,
+    });
+  });
+
   it("refreshes session info for /trace without reloading history", async () => {
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);

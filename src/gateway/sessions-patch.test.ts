@@ -334,6 +334,26 @@ describe("gateway sessions patch", () => {
     expect(entry.fastMode).toBe("auto");
   });
 
+  test("sets and trims displayName from a rename patch", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: { key: MAIN_SESSION_KEY, displayName: "  Trading Desk  " },
+      }),
+    );
+    expect(entry.displayName).toBe("Trading Desk");
+  });
+
+  test("clears displayName when rename patch sets null", async () => {
+    const store = mainStoreEntry({ displayName: "Old Name" });
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, displayName: null },
+      }),
+    );
+    expect(entry.displayName).toBeUndefined();
+  });
+
   test("persists verboseLevel=full", async () => {
     const entry = expectPatchOk(
       await runPatch({
