@@ -155,6 +155,39 @@ describe("tui session actions", () => {
     expect(requestRender).toHaveBeenCalledTimes(2);
   });
 
+  it("threads colorTag from a refresh into sessionInfo and repaints the footer", async () => {
+    // Regression: /color patched the store and the gateway projected colorTag,
+    // but applySessionInfo dropped it (never copied, never compared), so the
+    // footer never tinted. Assert the value lands and the footer repaints.
+    const listSessions = vi.fn().mockResolvedValue({
+      ts: Date.now(),
+      path: "/tmp/sessions.json",
+      count: 1,
+      defaults: {},
+      sessions: [
+        {
+          key: "agent:main:main",
+          colorTag: "#ff0000",
+          updatedAt: 100,
+        },
+      ],
+    });
+
+    const state = createBaseState();
+    const updateFooter = vi.fn();
+
+    const { refreshSessionInfo } = createTestSessionActions({
+      client: { listSessions } as unknown as TuiBackend,
+      state,
+      updateFooter,
+    });
+
+    await refreshSessionInfo();
+
+    expect(state.sessionInfo.colorTag).toBe("#ff0000");
+    expect(updateFooter).toHaveBeenCalled();
+  });
+
   it("coalesces refresh bursts into a single follow-up lookup", async () => {
     let resolveFirst: ((value: unknown) => void) | undefined;
     let resolveSecond: ((value: unknown) => void) | undefined;

@@ -90,6 +90,7 @@ function sessionInfoUiEquals(left: SessionInfo, right: SessionInfo): boolean {
     left.totalTokens === right.totalTokens &&
     left.responseUsage === right.responseUsage &&
     left.displayName === right.displayName &&
+    left.colorTag === right.colorTag &&
     goalEquals(left.goal, right.goal)
   );
 }
@@ -282,6 +283,9 @@ export function createSessionActions(context: SessionActionContext) {
     }
     if (entry?.displayName !== undefined) {
       next.displayName = entry.displayName;
+    }
+    if (entry?.colorTag !== undefined) {
+      next.colorTag = entry.colorTag;
     }
     if (entry?.updatedAt !== undefined) {
       next.updatedAt = entry.updatedAt;
