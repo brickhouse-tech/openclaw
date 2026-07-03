@@ -1016,6 +1016,76 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
   });
 
+  it("treats already-compacted manual compaction as a benign skip", async () => {
+    resolveModelMock.mockImplementation((provider = "openai", modelId = "fake") => ({
+      model: { provider, api: "responses", id: modelId, input: [] },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    }));
+    sessionCompactImpl.mockRejectedValueOnce(new Error("Already compacted"));
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: TEST_SESSION_KEY,
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp/workspace",
+      provider: "openai",
+      model: "gpt-primary",
+      config: {
+        agents: {
+          defaults: {
+            compaction: {
+              model: "openai/gpt-primary",
+            },
+          },
+        },
+      } as never,
+    });
+
+    expectRecordFields(result, {
+      ok: true,
+      compacted: false,
+      reason: "Already compacted",
+    });
+    expect(result.failure).toBeUndefined();
+  });
+
+  it("treats nothing-to-compact manual compaction as a benign skip", async () => {
+    resolveModelMock.mockImplementation((provider = "openai", modelId = "fake") => ({
+      model: { provider, api: "responses", id: modelId, input: [] },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    }));
+    sessionCompactImpl.mockRejectedValueOnce(new Error("Nothing to compact (session too small)"));
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: TEST_SESSION_KEY,
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp/workspace",
+      provider: "openai",
+      model: "gpt-primary",
+      config: {
+        agents: {
+          defaults: {
+            compaction: {
+              model: "openai/gpt-primary",
+            },
+          },
+        },
+      } as never,
+    });
+
+    expectRecordFields(result, {
+      ok: true,
+      compacted: false,
+      reason: "Nothing to compact (session too small)",
+    });
+    expect(result.failure).toBeUndefined();
+  });
+
   it("emits internal + plugin compaction hooks with counts", async () => {
     hookRunner.hasHooks.mockReturnValue(true);
     await runCompactionHooks({
