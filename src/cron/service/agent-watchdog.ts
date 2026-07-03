@@ -17,6 +17,21 @@ const CRON_AGENT_SETUP_WATCHDOG_MS = 60_000;
 const CRON_AGENT_PRE_EXECUTION_WATCHDOG_MS = 60_000;
 const CRON_AGENT_PRE_EXECUTION_MIN_WATCHDOG_MS = 1_000;
 
+// Startup (setup + pre-execution) can legitimately exceed 60s on loaded hosts
+// where plugin load, hooks, and model resolution contend with concurrent runs.
+// OPENCLAW_CRON_STARTUP_WATCHDOG_MS raises the cap without touching per-job timeouts.
+function resolveCronAgentStartupWatchdogCapMs(defaultMs: number): number {
+  const raw = process.env.OPENCLAW_CRON_STARTUP_WATCHDOG_MS;
+  if (!raw?.trim()) {
+    return defaultMs;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultMs;
+  }
+  return Math.max(parsed, defaultMs);
+}
+
 type CronAgentWatchdogState =
   | "waiting_for_runner"
   | "waiting_for_execution"
@@ -138,7 +153,7 @@ export function createCronAgentWatchdog(params: {
           if (state === "waiting_for_runner") {
             setTimedOut(setupTimeoutErrorMessage(activeExecution));
           }
-        }, CRON_AGENT_SETUP_WATCHDOG_MS);
+        }, resolveCronAgentStartupWatchdogCapMs(CRON_AGENT_SETUP_WATCHDOG_MS));
         return;
       }
       startTimeout();
@@ -205,6 +220,9 @@ export async function cleanupTimedOutCronAgentRun(
 function resolveCronAgentPreExecutionWatchdogMs(jobTimeoutMs: number): number {
   return Math.max(
     CRON_AGENT_PRE_EXECUTION_MIN_WATCHDOG_MS,
-    Math.min(CRON_AGENT_PRE_EXECUTION_WATCHDOG_MS, Math.floor(jobTimeoutMs / 2)),
+    Math.min(
+      resolveCronAgentStartupWatchdogCapMs(CRON_AGENT_PRE_EXECUTION_WATCHDOG_MS),
+      Math.floor(jobTimeoutMs / 2),
+    ),
   );
 }
