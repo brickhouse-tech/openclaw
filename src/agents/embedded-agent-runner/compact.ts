@@ -1684,6 +1684,21 @@ async function compactEmbeddedAgentSessionDirectOnce(
       reason: formatErrorMessage(err),
       safeguardCancelReason: consumeCompactionSafeguardCancelReason(compactionSessionManager),
     });
+    const classification = classifyCompactionReason(reason);
+    if (
+      classification === "already_compacted_recently" ||
+      classification === "no_compactable_entries" ||
+      classification === "below_threshold"
+    ) {
+      // Manual compaction on an already-compacted or too-small session is a
+      // successful no-op, mirroring the "no real conversation messages" skip —
+      // callers (sessions.compact RPC, TUI, compact sweeps) should not surface
+      // it as a failure.
+      log.info(
+        `[compaction] skipping — ${reason} (sessionKey=${params.sessionKey ?? params.sessionId})`,
+      );
+      return { ok: true, compacted: false, reason };
+    }
     return fail(reason, err);
   } finally {
     if (!checkpointSnapshotRetained) {
