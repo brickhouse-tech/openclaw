@@ -21,19 +21,31 @@ export function createLockChecker(locked: readonly unknown[] | undefined): LockC
   }
   const normalized: string[] = [];
   for (const entry of locked) {
-    if (typeof entry !== "string") continue;
+    if (typeof entry !== "string") {
+      continue;
+    }
     const trimmed = entry.trim();
-    if (trimmed.length > 0) normalized.push(trimmed);
+    if (trimmed.length > 0) {
+      normalized.push(trimmed);
+    }
   }
   if (normalized.length === 0) {
     return ALWAYS_FALSE;
   }
   return (path) => {
-    if (typeof path !== "string" || path.length === 0) return false;
+    if (typeof path !== "string" || path.length === 0) {
+      return false;
+    }
     for (const lock of normalized) {
-      if (path === lock) return true;
-      if (path.startsWith(`${lock}.`)) return true;
-      if (path.startsWith(`${lock}[`)) return true;
+      if (path === lock) {
+        return true;
+      }
+      if (path.startsWith(`${lock}.`)) {
+        return true;
+      }
+      if (path.startsWith(`${lock}[`)) {
+        return true;
+      }
     }
     return false;
   };
