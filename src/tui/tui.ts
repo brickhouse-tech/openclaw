@@ -1251,6 +1251,9 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     // Per-part styling (rather than one outer dim) keeps the color from being
     // clobbered by the surrounding dim reset codes.
     const colorHex = sessionColorHex(sessionInfo.colorTag);
+    // Also tint the editor's border lines so the whole input area reflects
+    // the session color, falling back to the theme default when cleared.
+    editor.borderColor = colorHex ? theme.color(colorHex) : editorTheme.borderColor;
     const sessionSegment = `session ${sessionLabel}`;
     const footerParts = [
       hostLabel ? dim(hostLabel) : null,
