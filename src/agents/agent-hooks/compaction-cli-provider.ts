@@ -74,8 +74,11 @@ function renderMessage(message: unknown): string | undefined {
   if (typeof message === "string") {
     return message.trim() || undefined;
   }
-  if (typeof message !== "object") {
+  if (typeof message === "number" || typeof message === "boolean" || typeof message === "bigint") {
     return String(message);
+  }
+  if (typeof message !== "object") {
+    return undefined;
   }
   const record = message as Record<string, unknown>;
   const role = typeof record.role === "string" ? record.role : "message";
@@ -236,6 +239,18 @@ function runClaude(params: {
       );
     });
 
+    child.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      // EPIPE means the CLI exited before consuming the prompt; the close
+      // handler already reports the real failure, so swallow it here.
+      if (err.code === "EPIPE") {
+        return;
+      }
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
     try {
       child.stdin?.end(params.prompt);
     } catch (err) {
