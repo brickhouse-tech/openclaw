@@ -2433,6 +2433,8 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let key: String
     public let agentid: String?
     public let label: AnyCodable?
+    public let displayname: AnyCodable?
+    public let colortag: AnyCodable?
     public let thinkinglevel: AnyCodable?
     public let fastmode: AnyCodable?
     public let verboselevel: AnyCodable?
@@ -2460,6 +2462,8 @@ public struct SessionsPatchParams: Codable, Sendable {
         key: String,
         agentid: String? = nil,
         label: AnyCodable?,
+        displayname: AnyCodable?,
+        colortag: AnyCodable?,
         thinkinglevel: AnyCodable?,
         fastmode: AnyCodable?,
         verboselevel: AnyCodable?,
@@ -2486,6 +2490,8 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.key = key
         self.agentid = agentid
         self.label = label
+        self.displayname = displayname
+        self.colortag = colortag
         self.thinkinglevel = thinkinglevel
         self.fastmode = fastmode
         self.verboselevel = verboselevel
@@ -2514,6 +2520,8 @@ public struct SessionsPatchParams: Codable, Sendable {
         case key
         case agentid = "agentId"
         case label
+        case displayname = "displayName"
+        case colortag = "colorTag"
         case thinkinglevel = "thinkingLevel"
         case fastmode = "fastMode"
         case verboselevel = "verboseLevel"
