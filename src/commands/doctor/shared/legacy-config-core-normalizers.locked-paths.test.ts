@@ -81,8 +81,8 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
 
     const models = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
       .models;
-    expect(Object.keys(models).sort()).toEqual(
-      ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].sort(),
+    expect(Object.keys(models).toSorted()).toEqual(
+      ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].toSorted(),
     );
   });
 
@@ -95,9 +95,9 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
       string,
       Record<string, unknown>
     >;
-    expect((defaults.model as Record<string, unknown>).primary).toBe("claude-cli/claude-opus-4-7");
-    expect(Object.keys(defaults.models as Record<string, unknown>).sort()).toEqual(
-      ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].sort(),
+    expect(defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
+    expect(Object.keys(defaults.models).toSorted()).toEqual(
+      ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].toSorted(),
     );
   });
 
