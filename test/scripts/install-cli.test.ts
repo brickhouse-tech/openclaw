@@ -166,10 +166,7 @@ describe("install-cli.sh", () => {
     mkdirSync(bin, { recursive: true });
     mkdirSync(outer, { recursive: true });
     mkdirSync(repo, { recursive: true });
-    writeFileSync(
-      join(outer, "package.json"),
-      '{\n  "packageManager": "yarn@4.5.0"\n}\n',
-    );
+    writeFileSync(join(outer, "package.json"), '{\n  "packageManager": "yarn@4.5.0"\n}\n');
     writeFileSync(
       join(repo, "package.json"),
       '{\n  "packageManager": "pnpm@11.2.2+sha512.test"\n}\n',
@@ -960,7 +957,7 @@ describe("install-cli.sh", () => {
     const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-cli-freshness-"));
     const prefix = join(tmp, "prefix");
     const home = join(tmp, "home");
-    const nodeBin = join(prefix, "tools/node-v22.22.0/bin");
+    const nodeBin = join(prefix, "tools/node-v22.22.3/bin");
     const argsLog = join(tmp, "npm-args.log");
     mkdirSync(nodeBin, { recursive: true });
     mkdirSync(home, { recursive: true });
@@ -996,7 +993,7 @@ describe("install-cli.sh", () => {
     const prefix = join(tmp, "prefix");
     const home = join(tmp, "home");
     const project = join(tmp, "project");
-    const nodeBin = join(prefix, "tools/node-v22.22.0/bin");
+    const nodeBin = join(prefix, "tools/node-v22.22.3/bin");
     const argsLog = join(tmp, "npm-args.log");
     mkdirSync(nodeBin, { recursive: true });
     mkdirSync(home, { recursive: true });
