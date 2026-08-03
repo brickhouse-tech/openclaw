@@ -246,12 +246,18 @@ function resolveBoundConversationSessionKey(params: {
 
 /** Initializes or reuses the reply session state for one inbound turn. */
 export async function initSessionState(params: InitSessionStateParams): Promise<SessionInitResult> {
-  return await initSessionStateAttempt(params, false);
+  return await initSessionStateAttempt(params, 0);
 }
+
+// Concurrent writers (multiple UI clients patching the same session key) can
+// repeatedly invalidate the commit snapshot; a single retry loses that race
+// under sustained load, so retry with backoff before giving up.
+const STALE_SNAPSHOT_MAX_ATTEMPTS = 5;
+const STALE_SNAPSHOT_BACKOFF_MS = 50;
 
 async function initSessionStateAttempt(
   params: InitSessionStateParams,
-  staleSnapshotRetried: boolean,
+  staleSnapshotAttempt: number,
 ): Promise<SessionInitResult> {
   const { ctx, cfg, commandAuthorized } = params;
   // Heartbeat, cron-event, and exec-event runs should NEVER trigger session
@@ -857,8 +863,11 @@ async function initSessionStateAttempt(
     storePath,
   });
   if (!committed.ok) {
-    if (!staleSnapshotRetried) {
-      return await initSessionStateAttempt(params, true);
+    if (staleSnapshotAttempt < STALE_SNAPSHOT_MAX_ATTEMPTS - 1) {
+      const backoffMs =
+        STALE_SNAPSHOT_BACKOFF_MS * 2 ** staleSnapshotAttempt + Math.floor(Math.random() * 25);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      return await initSessionStateAttempt(params, staleSnapshotAttempt + 1);
     }
     throw new Error(`reply session initialization conflicted for ${sessionKey}`);
   }
