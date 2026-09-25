@@ -4,6 +4,21 @@ import { describe, it, expect } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { normalizeLegacyRuntimeModelRefs } from "./legacy-config-core-normalizers.js";
 
+// Named (non-index-signature) test-only view of the migrated agent shape, so
+// property access below isn't subject to noUncheckedIndexedAccess turning
+// every read into `T | undefined` the way a `Record<string, ...>` cast would.
+type TestAgentModel = { primary?: string; fallbacks?: string[] };
+type TestAgentDefaults = {
+  model: TestAgentModel;
+  models: Record<string, unknown>;
+  compaction?: { model?: string };
+};
+type TestAgents = {
+  defaults: TestAgentDefaults;
+  list?: Array<{ id?: string; model: TestAgentModel }>;
+  entries?: Record<string, { model: TestAgentModel } | undefined>;
+};
+
 function buildCfg(overrides: Partial<OpenClawConfig> = {}): OpenClawConfig {
   return {
     agents: {
@@ -28,8 +43,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const model = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
-      .model;
+    const model = (next.agents as TestAgents).defaults.model;
     expect(model.primary).toBe("anthropic/claude-opus-4-7");
     expect(model.fallbacks).toEqual(["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6"]);
     expect(changes.length).toBeGreaterThan(0);
@@ -40,8 +54,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const model = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
-      .model;
+    const model = (next.agents as TestAgents).defaults.model;
     expect(model.primary).toBe("claude-cli/claude-opus-4-7");
     expect(model.fallbacks).toEqual(["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6"]);
   });
@@ -51,8 +64,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const model = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
-      .model;
+    const model = (next.agents as TestAgents).defaults.model;
     expect(model.primary).toBe("anthropic/claude-opus-4-7");
     expect(model.fallbacks).toEqual(["claude-cli/claude-opus-4-8", "claude-cli/claude-sonnet-4-6"]);
   });
@@ -62,8 +74,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const model = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
-      .model;
+    const model = (next.agents as TestAgents).defaults.model;
     expect(model.primary).toBe("claude-cli/claude-opus-4-7");
     expect(model.fallbacks).toEqual(["claude-cli/claude-opus-4-8", "claude-cli/claude-sonnet-4-6"]);
   });
@@ -73,8 +84,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const models = (next.agents as Record<string, Record<string, Record<string, unknown>>>).defaults
-      .models;
+    const models = (next.agents as TestAgents).defaults.models;
     expect(Object.keys(models).toSorted()).toEqual(
       ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].toSorted(),
     );
@@ -85,10 +95,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const defaults = (next.agents as Record<string, Record<string, unknown>>).defaults as Record<
-      string,
-      Record<string, unknown>
-    >;
+    const defaults = (next.agents as TestAgents).defaults;
     expect(defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
     expect(Object.keys(defaults.models).toSorted()).toEqual(
       ["claude-cli/claude-opus-4-7", "claude-cli/claude-sonnet-4-6"].toSorted(),
@@ -113,11 +120,9 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const agents = next.agents as Record<string, unknown>;
-    const defaults = agents.defaults as Record<string, Record<string, unknown>>;
-    expect(defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
-    const list = agents.list as Array<Record<string, Record<string, unknown>>>;
-    expect(list[0]?.model.primary).toBe("anthropic/claude-sonnet-4-6");
+    const agents = next.agents as TestAgents;
+    expect(agents.defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
+    expect(agents.list?.[0]?.model.primary).toBe("anthropic/claude-sonnet-4-6");
   });
 
   it("does not affect agents.entries when only agents.defaults is locked", () => {
@@ -137,11 +142,9 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const agents = next.agents as Record<string, unknown>;
-    const defaults = agents.defaults as Record<string, Record<string, unknown>>;
-    expect(defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
-    const entries = agents.entries as Record<string, Record<string, Record<string, unknown>>>;
-    expect(entries.main?.model.primary).toBe("anthropic/claude-sonnet-4-6");
+    const agents = next.agents as TestAgents;
+    expect(agents.defaults.model.primary).toBe("claude-cli/claude-opus-4-7");
+    expect(agents.entries?.main?.model.primary).toBe("anthropic/claude-sonnet-4-6");
   });
 
   // Regression: agents.defaults.compaction.model is a bare string field that only
@@ -167,10 +170,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const defaults = (next.agents as Record<string, Record<string, unknown>>).defaults as Record<
-      string,
-      Record<string, unknown>
-    >;
+    const defaults = (next.agents as TestAgents).defaults;
     expect(defaults.model).toEqual({
       primary: "claude-cli/claude-opus-4-7",
       fallbacks: ["claude-cli/claude-sonnet-4-6"],
@@ -192,10 +192,7 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     const changes: string[] = [];
     const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
 
-    const defaults = (next.agents as Record<string, Record<string, unknown>>).defaults as Record<
-      string,
-      Record<string, unknown>
-    >;
+    const defaults = (next.agents as TestAgents).defaults;
     expect(defaults.model).toEqual({ primary: "claude-cli/claude-opus-4-7" });
     expect(defaults.compaction).toEqual({ model: "anthropic/claude-haiku-4-5" });
   });
