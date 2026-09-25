@@ -346,6 +346,64 @@ describe("anthropic cli migration", () => {
     });
   });
 
+  it("leaves agents.defaults.model untouched when locked via cfg.locked", () => {
+    const result = buildAnthropicCliMigrationResult({
+      locked: ["agents.defaults.model"],
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli/claude-opus-4-7" },
+          models: {
+            "claude-cli/claude-opus-4-7": {},
+          },
+        },
+      },
+    });
+
+    expect(result.configPatch?.agents?.defaults?.model).toBeUndefined();
+    // The models allowlist is still seeded/migrated; only the `model` field is locked.
+    expect(result.configPatch?.agents?.defaults?.models?.["anthropic/claude-opus-4-7"]).toEqual({
+      agentRuntime: { id: "claude-cli" },
+    });
+  });
+
+  it("leaves agents.defaults.models untouched when locked via cfg.locked", () => {
+    const result = buildAnthropicCliMigrationResult({
+      locked: ["agents.defaults.models"],
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli/claude-opus-4-7" },
+          models: {
+            "claude-cli/claude-opus-4-7": {},
+          },
+        },
+      },
+    });
+
+    expect(result.configPatch?.agents?.defaults?.models).toBeUndefined();
+    expect(result.replaceDefaultModels).toBe(false);
+    // The primary model ref still migrates; only the `models` map is locked.
+    expect(result.configPatch?.agents?.defaults?.model).toEqual({
+      primary: "anthropic/claude-opus-4-7",
+    });
+  });
+
+  it("leaves both model and models untouched when agents.defaults is fully locked", () => {
+    const result = buildAnthropicCliMigrationResult({
+      locked: ["agents.defaults"],
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli/claude-opus-4-7" },
+          models: {
+            "claude-cli/claude-opus-4-7": {},
+          },
+        },
+      },
+    });
+
+    expect(result.configPatch?.agents?.defaults?.model).toBeUndefined();
+    expect(result.configPatch?.agents?.defaults?.models).toBeUndefined();
+  });
+
   it.each([
     {
       descriptor: {
