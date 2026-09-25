@@ -6,6 +6,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.js";
+import { ensureClaudeCliCompactionProvider } from "../agent-hooks/compaction-cli-provider.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import { resolveEffectiveCompactionMode } from "../agent-settings.js";
@@ -134,6 +135,9 @@ export function buildEmbeddedExtensionFactories(params: {
   const factories: ExtensionFactory[] = [];
   if (resolveEffectiveCompactionMode(params.cfg) === "safeguard") {
     const compactionCfg = params.cfg?.agents?.defaults?.compaction;
+    // Register the built-in claude-cli compaction provider before the safeguard
+    // extension can look it up, when the user has opted in via compaction.provider.
+    ensureClaudeCliCompactionProvider(params.cfg, params.agentId);
     const qualityGuardCfg = compactionCfg?.qualityGuard;
     // Prepared runs carry the canonical policy budget; fallback resolution is
     // only for callers that do not own a prepared attempt.
