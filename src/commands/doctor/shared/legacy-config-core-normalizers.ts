@@ -30,6 +30,7 @@ import {
   migrateLegacyRuntimeModelRef,
   resolveLegacyCliRuntimeAlias,
 } from "./legacy-runtime-model-providers.js";
+import { createConfigLockChecker, type LockChecker } from "./locked-paths.js";
 export { normalizeLegacyTalkConfig } from "./legacy-talk-config-normalizer.js";
 
 const INHERITED_ACCOUNT_POLICY_KEYS = ["dmPolicy", "allowFrom", "groupPolicy", "groupAllowFrom"];
@@ -279,6 +280,8 @@ function normalizeLegacyCodexCliAgentRuntimePolicy(raw: unknown): {
 
 function normalizeLegacyRuntimeAgentModelConfig(
   raw: unknown,
+  path: string,
+  isLocked: LockChecker,
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): {
   value?: unknown;
@@ -287,6 +290,9 @@ function normalizeLegacyRuntimeAgentModelConfig(
   selectedRefs: SelectedRuntimeRef[];
 } {
   if (typeof raw === "string") {
+    if (isLocked(path)) {
+      return { value: raw, changed: false, selectedRefs: [] };
+    }
     const migrated = migrateUnblockedLegacyRuntimeModelRef(raw, blockedModelIdentities);
     return migrated
       ? {
@@ -306,8 +312,10 @@ function normalizeLegacyRuntimeAgentModelConfig(
     return { value: raw, changed: false, selectedRefs: [] };
   }
 
+  const primaryLocked = isLocked(`${path}.primary`);
+  const fallbacksLocked = isLocked(`${path}.fallbacks`);
   const migratedPrimary =
-    typeof raw.primary === "string"
+    !primaryLocked && typeof raw.primary === "string"
       ? migrateUnblockedLegacyRuntimeModelRef(raw.primary, blockedModelIdentities)
       : null;
   let changed = false;
@@ -322,7 +330,7 @@ function normalizeLegacyRuntimeAgentModelConfig(
     });
     changed = true;
   }
-  if (Array.isArray(raw.fallbacks)) {
+  if (!fallbacksLocked && Array.isArray(raw.fallbacks)) {
     next.fallbacks = raw.fallbacks.map((fallback) => {
       if (typeof fallback !== "string") {
         return fallback;
@@ -483,6 +491,7 @@ function normalizeLegacyRuntimeAgentContainer(
   raw: Record<string, unknown>,
   path: string,
   changes: string[],
+  isLocked: LockChecker,
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): { value: Record<string, unknown>; changed: boolean } {
   let changed = false;
@@ -490,8 +499,15 @@ function normalizeLegacyRuntimeAgentContainer(
   const legacyWholeAgentRuntime = resolveLegacyCliRuntimeAlias(
     isRecord(raw.agentRuntime) ? raw.agentRuntime.id : undefined,
   );
+  const modelsPath = `${path}.models`;
+  const modelsLocked = isLocked(modelsPath);
 
-  const model = normalizeLegacyRuntimeAgentModelConfig(raw.model, blockedModelIdentities);
+  const model = normalizeLegacyRuntimeAgentModelConfig(
+    raw.model,
+    `${path}.model`,
+    isLocked,
+    blockedModelIdentities,
+  );
   if (model.changed) {
     next.model = model.value;
     changed = true;
@@ -504,26 +520,31 @@ function normalizeLegacyRuntimeAgentContainer(
   }
 
   const modelPolicy = normalizeLegacyRuntimeModelPolicy(raw.modelPolicy, blockedModelIdentities);
-  const models = normalizeLegacyRuntimeAllowlistModels(raw.models, blockedModelIdentities);
-  if (models.changed) {
-    next.models = models.value;
-    changed = true;
-    changes.push(`Moved ${path}.models legacy runtime keys to canonical provider keys.`);
-  }
-
-  const policyRuntimes = ensureSelectedModelRuntimePolicies(next.models, modelPolicy.selectedRefs);
-  if (policyRuntimes.changed) {
-    next.models = policyRuntimes.value;
-    changed = true;
-    changes.push(`Preserved runtime policy for ${path}.modelPolicy.allow entries.`);
-  }
-
-  if (model.selectedRuntime) {
-    const modelRuntimes = ensureSelectedModelRuntimePolicies(next.models, model.selectedRefs);
-    if (modelRuntimes.changed) {
-      next.models = modelRuntimes.value;
+  if (!modelsLocked) {
+    const models = normalizeLegacyRuntimeAllowlistModels(raw.models, blockedModelIdentities);
+    if (models.changed) {
+      next.models = models.value;
       changed = true;
-      changes.push(`Selected ${model.selectedRuntime} runtime for ${path}.models entries.`);
+      changes.push(`Moved ${path}.models legacy runtime keys to canonical provider keys.`);
+    }
+
+    const policyRuntimes = ensureSelectedModelRuntimePolicies(
+      next.models,
+      modelPolicy.selectedRefs,
+    );
+    if (policyRuntimes.changed) {
+      next.models = policyRuntimes.value;
+      changed = true;
+      changes.push(`Preserved runtime policy for ${path}.modelPolicy.allow entries.`);
+    }
+
+    if (model.selectedRuntime) {
+      const modelRuntimes = ensureSelectedModelRuntimePolicies(next.models, model.selectedRefs);
+      if (modelRuntimes.changed) {
+        next.models = modelRuntimes.value;
+        changed = true;
+        changes.push(`Selected ${model.selectedRuntime} runtime for ${path}.models entries.`);
+      }
     }
   }
 
@@ -534,21 +555,25 @@ function normalizeLegacyRuntimeAgentContainer(
     }
     const selection = normalizeLegacyRuntimeAgentModelConfig(
       execution.model,
+      `${path}.${key}.model`,
+      isLocked,
       blockedModelIdentities,
     );
     if (!selection.changed) {
       continue;
     }
     next[key] = { ...execution, model: selection.value };
-    const runtimes = ensureSelectedModelRuntimePolicies(next.models, selection.selectedRefs);
-    if (runtimes.changed) {
-      next.models = runtimes.value;
+    if (!modelsLocked) {
+      const runtimes = ensureSelectedModelRuntimePolicies(next.models, selection.selectedRefs);
+      if (runtimes.changed) {
+        next.models = runtimes.value;
+      }
     }
     changed = true;
     changes.push(`Moved ${path}.${key}.model to canonical refs with model runtime policy.`);
   }
 
-  if (legacyWholeAgentRuntime) {
+  if (legacyWholeAgentRuntime && !modelsLocked) {
     const selectedRefs: SelectedRuntimeRef[] = selectedCanonicalModelRefsForRuntimePolicy(
       next.model ?? raw.model,
       legacyWholeAgentRuntime.provider,
@@ -578,14 +603,16 @@ function normalizeLegacyRuntimeAgentContainer(
     changes.push(`Moved ${path}.modelPolicy.allow legacy runtime refs to canonical provider refs.`);
   }
 
-  const codexCliRuntimePins = normalizeLegacyCodexCliRuntimePinsInModels(
-    next.models,
-    `${path}.models`,
-    changes,
-  );
-  if (codexCliRuntimePins.changed) {
-    next.models = codexCliRuntimePins.value;
-    changed = true;
+  if (!modelsLocked) {
+    const codexCliRuntimePins = normalizeLegacyCodexCliRuntimePinsInModels(
+      next.models,
+      modelsPath,
+      changes,
+    );
+    if (codexCliRuntimePins.changed) {
+      next.models = codexCliRuntimePins.value;
+      changed = true;
+    }
   }
 
   return { value: next, changed };
@@ -658,16 +685,25 @@ function normalizeLegacyCodexCliProviderRuntimePins(
     : { config: cfg, changed: false };
 }
 
+/** Strip the synthetic "config" walk root so computed paths match user-authored `locked` entries. */
+function relativeToConfigRoot(path: string): string {
+  return path === "config" ? "" : path.startsWith("config.") ? path.slice("config.".length) : path;
+}
+
 /** Move legacy runtime-tagged model/provider refs onto current agentRuntime policy fields. */
 export function normalizeLegacyRuntimeModelRefs(
   cfg: OpenClawConfig,
   changes: string[],
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): OpenClawConfig {
+  const isLocked = createConfigLockChecker(cfg);
   const providerPinned = normalizeLegacyCodexCliProviderRuntimePins(cfg, changes);
   const cfgWithProviders = providerPinned.config;
   const rewriteRemainingSlots = (config: OpenClawConfig): OpenClawConfig =>
-    rewriteModelRefs(config, "config", changes, (modelRef) => {
+    rewriteModelRefs(config, "config", changes, (modelRef, refPath) => {
+      if (refPath && isLocked(relativeToConfigRoot(refPath))) {
+        return null;
+      }
       const migrated = migrateUnblockedLegacyRuntimeModelRef(modelRef, blockedModelIdentities);
       return migrated &&
         (migrated.legacyProvider === "codex-cli" ||
@@ -688,6 +724,7 @@ export function normalizeLegacyRuntimeModelRefs(
       rawAgents.defaults,
       "agents.defaults",
       changes,
+      isLocked,
       blockedModelIdentities,
     );
     if (defaults.changed) {
@@ -707,6 +744,7 @@ export function normalizeLegacyRuntimeModelRefs(
         entry,
         path,
         changes,
+        isLocked,
         blockedModelIdentities,
       );
       if (agent.changed) {
@@ -730,6 +768,7 @@ export function normalizeLegacyRuntimeModelRefs(
         entry,
         `agents.entries.${sanitizeForLog(agentId)}`,
         changes,
+        isLocked,
         blockedModelIdentities,
       );
       if (agent.changed) {

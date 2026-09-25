@@ -109,7 +109,10 @@ export function scanKnownModelRefs(value: unknown, key?: string, path = ""): boo
   );
 }
 
-type ModelRefNormalizer = (value: string) => string | null;
+// `path` is optional so existing path-agnostic normalizers (e.g.
+// normalizeKnownModelRef) keep working unchanged; only path-aware callers
+// (e.g. the doctor `locked` guard) need to inspect it.
+type ModelRefNormalizer = (value: string, path?: string) => string | null;
 
 function rewriteModelRefString(
   value: string,
@@ -117,7 +120,7 @@ function rewriteModelRefString(
   changes: string[],
   normalize: ModelRefNormalizer,
 ): string {
-  const upgraded = normalize(value);
+  const upgraded = normalize(value, path);
   if (upgraded === null || upgraded === value) {
     return value;
   }
@@ -221,7 +224,7 @@ function rewriteModelRefMapKeys(
   const next: Record<string, unknown> = {};
   const consumedCanonicalKeys = new Set<string>();
   for (const [key, child] of Object.entries(record)) {
-    const upgradedKey = normalize(key);
+    const upgradedKey = normalize(key, path);
     const nextKey = upgradedKey ?? key;
     if (!upgradedKey && consumedCanonicalKeys.has(key)) {
       continue;
