@@ -417,7 +417,11 @@ export function rewriteModelRefs(
   const providerModelPair = provider !== undefined && model !== undefined;
   if (provider?.trim() && model !== undefined) {
     const ref = `${provider}/${model}`;
-    const rewritten = normalize(ref);
+    // The lock check is keyed on the specific field a locked entry names (e.g.
+    // "agents.defaults.compaction.model"), not this object's own path — pass the
+    // model child's path so a lock on the model field also protects its paired
+    // provider from this atomic provider+model rewrite.
+    const rewritten = normalize(ref, `${path}.model`);
     if (rewritten && rewritten !== ref) {
       const slash = rewritten.indexOf("/");
       working = {
