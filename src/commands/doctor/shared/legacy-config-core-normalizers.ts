@@ -32,6 +32,7 @@ import { normalizeLegacyMistralModelCost } from "./legacy-mistral-model-cost.js"
 import { isLegacyModelsAddCodexMetadataModel } from "./legacy-models-add-metadata.js";
 import { modelEntryWithRuntimePolicy } from "./legacy-runtime-model-policy.js";
 import { migrateLegacyRuntimeModelRef } from "./legacy-runtime-model-providers.js";
+import { createConfigLockChecker, type LockChecker } from "./locked-paths.js";
 export { normalizeLegacyTalkConfig } from "./legacy-talk-config-normalizer.js";
 
 const log = createSubsystemLogger("doctor");
@@ -133,17 +134,21 @@ function createRuntimeModelRefRewriter(
 
 function migrateRuntimeSelection(
   owner: Record<string, unknown>,
+  path: string,
+  isLocked: LockChecker,
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): SelectedRuntimeRef[] {
   const { rewrite, selected } = createRuntimeModelRefRewriter(blockedModelIdentities);
   const model = owner.model;
   if (typeof model === "string") {
-    owner.model = rewrite(model);
+    if (!isLocked(path)) {
+      owner.model = rewrite(model);
+    }
   } else if (isRecord(model)) {
-    if (typeof model.primary === "string") {
+    if (!isLocked(`${path}.primary`) && typeof model.primary === "string") {
       model.primary = rewrite(model.primary);
     }
-    if (Array.isArray(model.fallbacks)) {
+    if (!isLocked(`${path}.fallbacks`) && Array.isArray(model.fallbacks)) {
       model.fallbacks = model.fallbacks.map(rewrite);
     }
   }
@@ -176,9 +181,13 @@ function migrateRuntimeAgent(
   agent: Record<string, unknown>,
   path: string,
   changes: string[],
+  isLocked: LockChecker,
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): void {
-  const selected = migrateRuntimeSelection(agent, blockedModelIdentities);
+  // A locked models map stays untouched as one unit: key rewrites, runtime-policy enrichment,
+  // and codex-cli pins all skip it.
+  const modelsLocked = isLocked(`${path}.models`);
+  const selected = migrateRuntimeSelection(agent, `${path}.model`, isLocked, blockedModelIdentities);
   if (selected.length) {
     changes.push(
       `Moved ${path}.model legacy runtime primary refs to canonical provider refs and selected ${selected[0]!.runtime} runtime.`,
@@ -187,7 +196,7 @@ function migrateRuntimeAgent(
   const policy = isRecord(agent.modelPolicy) ? agent.modelPolicy : undefined;
   const { rewrite, selected: policyRefs } = createRuntimeModelRefRewriter(blockedModelIdentities);
   const allow = Array.isArray(policy?.allow) ? policy.allow.map(rewrite) : undefined;
-  if (isRecord(agent.models)) {
+  if (!modelsLocked && isRecord(agent.models)) {
     const models: Record<string, unknown> = {};
     const legacy: Array<SelectedRuntimeRef & { entry: unknown }> = [];
     for (const [ref, entry] of Object.entries(agent.models)) {
@@ -207,10 +216,10 @@ function migrateRuntimeAgent(
       changes.push(`Moved ${path}.models legacy runtime keys to canonical provider keys.`);
     }
   }
-  if (ensureSelectedModelRuntimePolicies(agent, policyRefs)) {
+  if (!modelsLocked && ensureSelectedModelRuntimePolicies(agent, policyRefs)) {
     changes.push(`Preserved runtime policy for ${path}.modelPolicy.allow entries.`);
   }
-  if (ensureSelectedModelRuntimePolicies(agent, selected)) {
+  if (!modelsLocked && ensureSelectedModelRuntimePolicies(agent, selected)) {
     changes.push(`Selected ${selected[0]!.runtime} runtime for ${path}.models entries.`);
   }
   for (const key of ["heartbeat", "subagents"]) {
@@ -218,9 +227,16 @@ function migrateRuntimeAgent(
     if (!isRecord(execution)) {
       continue;
     }
-    const refs = migrateRuntimeSelection(execution, blockedModelIdentities);
+    const refs = migrateRuntimeSelection(
+      execution,
+      `${path}.${key}.model`,
+      isLocked,
+      blockedModelIdentities,
+    );
     if (refs.length) {
-      ensureSelectedModelRuntimePolicies(agent, refs);
+      if (!modelsLocked) {
+        ensureSelectedModelRuntimePolicies(agent, refs);
+      }
       changes.push(`Moved ${path}.${key}.model to canonical refs with model runtime policy.`);
     }
   }
@@ -228,7 +244,9 @@ function migrateRuntimeAgent(
     policy.allow = allow;
     changes.push(`Moved ${path}.modelPolicy.allow legacy runtime refs to canonical provider refs.`);
   }
-  for (const [ref, entry] of Object.entries(isRecord(agent.models) ? agent.models : {})) {
+  for (const [ref, entry] of Object.entries(
+    !modelsLocked && isRecord(agent.models) ? agent.models : {},
+  )) {
     if (isRecord(entry) && migrateCodexCliRuntimePolicy(entry.agentRuntime)) {
       changes.push(
         `Moved ${path}.models.${sanitizeForLog(ref)} agentRuntime.id from codex-cli to codex.`,
@@ -237,12 +255,18 @@ function migrateRuntimeAgent(
   }
 }
 
+/** Strip the synthetic "config" walk root so computed paths match user-authored `locked` entries. */
+function relativeToConfigRoot(path: string): string {
+  return path === "config" ? "" : path.startsWith("config.") ? path.slice("config.".length) : path;
+}
+
 /** Move legacy runtime-tagged refs on a private copy, preserving the caller's source. */
 export function normalizeLegacyRuntimeModelRefs(
   cfg: OpenClawConfigWithLegacyRoster,
   changes: string[],
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
 ): OpenClawConfigWithLegacyRoster {
+  const isLocked = createConfigLockChecker(cfg);
   const next = cloneConfigWithResolutionFacts(cfg);
   for (const [providerId, provider] of modelProviders(next)) {
     if (migrateCodexCliRuntimePolicy(provider.agentRuntime)) {
@@ -262,7 +286,13 @@ export function normalizeLegacyRuntimeModelRefs(
   const agents = next.agents;
   if (isRecord(agents)) {
     if (isRecord(agents.defaults)) {
-      migrateRuntimeAgent(agents.defaults, "agents.defaults", changes, blockedModelIdentities);
+      migrateRuntimeAgent(
+        agents.defaults,
+        "agents.defaults",
+        changes,
+        isLocked,
+        blockedModelIdentities,
+      );
     }
     for (const [key, entry] of Array.isArray(agents.list) ? agents.list.entries() : []) {
       if (isRecord(entry)) {
@@ -271,6 +301,7 @@ export function normalizeLegacyRuntimeModelRefs(
           entry,
           id ? `agents.list.${sanitizeForLog(id)}` : `agents.list[${key}]`,
           changes,
+          isLocked,
           blockedModelIdentities,
         );
       }
@@ -281,12 +312,16 @@ export function normalizeLegacyRuntimeModelRefs(
           entry,
           `agents.entries.${sanitizeForLog(id)}`,
           changes,
+          isLocked,
           blockedModelIdentities,
         );
       }
     }
   }
-  const rewritten = rewriteModelRefs(next, "config", changes, (ref) => {
+  const rewritten = rewriteModelRefs(next, "config", changes, (ref, refPath) => {
+    if (refPath && isLocked(relativeToConfigRoot(refPath))) {
+      return null;
+    }
     const migrated = migrateUnblockedLegacyRuntimeModelRef(ref, blockedModelIdentities);
     return migrated &&
       ["codex-cli", "claude-cli", "google-gemini-cli"].includes(migrated.legacyProvider)
