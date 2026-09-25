@@ -179,6 +179,64 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     expect(changes).toEqual([]);
   });
 
+  // Regression: the live config additionally sets a sibling `agents.defaults.compaction.provider`
+  // (e.g. "claude-cli") next to `.model`. That shape matches rewriteModelRefs' "provider/model
+  // pair" branch, which rewrites `provider`+`model` together via a bare `normalize(ref)` call that
+  // did not carry the field's path — so the path-aware lock check never fired and this branch
+  // rewrote a locked agents.defaults.compaction.model even though the sibling-free fixture above
+  // (compaction: { model: ... }, no provider) proved the guard clean. Live config always pairs
+  // compaction.provider with compaction.model, so this shape is not theoretical.
+  it("preserves agents.defaults.compaction.model when locked, with a sibling compaction.provider", () => {
+    const cfg: OpenClawConfig = {
+      locked: ["agents.defaults.model", "agents.defaults.compaction.model"],
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli/claude-opus-4-7" },
+          compaction: {
+            provider: "claude-cli",
+            model: "claude-cli/claude-sonnet-5",
+          },
+        },
+      } as unknown as OpenClawConfig["agents"],
+    };
+    const changes: string[] = [];
+    const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
+
+    const defaults = (next.agents as TestAgents).defaults;
+    expect(defaults.compaction).toEqual({
+      provider: "claude-cli",
+      model: "claude-cli/claude-sonnet-5",
+    });
+    expect(changes).toEqual([]);
+  });
+
+  it("still migrates compaction.provider/model together when not locked", () => {
+    const cfg: OpenClawConfig = {
+      locked: ["agents.defaults.model"],
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli/claude-opus-4-7" },
+          compaction: {
+            provider: "claude-cli",
+            model: "claude-cli/claude-sonnet-5",
+          },
+        },
+      } as unknown as OpenClawConfig["agents"],
+    };
+    const changes: string[] = [];
+    const next = normalizeLegacyRuntimeModelRefs(cfg, changes);
+
+    // Not a claim this ref-composition is ideal (the object-pair branch treats `model`
+    // as a bare id, but compaction.model is itself a full "provider/model" ref) — this
+    // pins the pre-existing unlocked-migration behavior so the fix above is scoped to
+    // making the lock check reachable, not to reworking ref composition.
+    const defaults = (next.agents as TestAgents).defaults;
+    expect(defaults.compaction).toEqual({
+      provider: "anthropic",
+      model: "claude-cli/claude-sonnet-5",
+    });
+  });
+
   it("still migrates compaction.model when it is not locked", () => {
     const cfg: OpenClawConfig = {
       locked: ["agents.defaults.model"],
