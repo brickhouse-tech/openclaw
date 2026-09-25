@@ -38,6 +38,9 @@ import { TelemetryConfigSchema } from "./zod-schema.telemetry.js";
 
 export const OpenClawSchemaShape = {
   $schema: z.string().optional(),
+  // Dotted config paths that doctor migrations must not rewrite; locking a
+  // path also locks every descendant. See OpenClawConfig.locked for details.
+  locked: z.array(z.string()).optional(),
   meta: z
     .strictObject({
       lastTouchedVersion: z.string().optional(),
