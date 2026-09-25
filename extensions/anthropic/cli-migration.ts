@@ -15,6 +15,29 @@ import {
 type AgentDefaultsModel = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["model"];
 type AgentDefaultsModels = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"];
 
+// Duplicated (rather than imported) from src/commands/doctor/shared/locked-paths.ts:
+// extensions only see the openclaw/plugin-sdk/* boundary, not core src/ internals.
+// Keep this in sync with that module's match semantics (exact match, dot/bracket
+// descendant prefix) if either changes.
+function isLockedPath(locked: readonly unknown[] | undefined, path: string): boolean {
+  if (!Array.isArray(locked)) {
+    return false;
+  }
+  for (const raw of locked) {
+    if (typeof raw !== "string") {
+      continue;
+    }
+    const lock = raw.trim();
+    if (!lock) {
+      continue;
+    }
+    if (path === lock || path.startsWith(`${lock}.`) || path.startsWith(`${lock}[`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function rewriteModelSelection(config: OpenClawConfig): {
   value: AgentDefaultsModel;
   primary?: string;
@@ -150,16 +173,27 @@ function seedClaudeCliAllowlist(
 
 export function buildAnthropicCliMigrationResult(config: OpenClawConfig): ProviderAuthResult {
   const defaults = config.agents?.defaults;
-  const rewrittenModel = rewriteModelSelection(config);
-  const rewrittenModels = rewriteModelEntryMap(defaults?.models);
+  // cfg.locked lets an operator pin agents.defaults.model/.models against
+  // rewrites (e.g. to keep raw claude-cli/* refs); honor it here too so
+  // running this auth choice can't silently undo that pin.
+  const modelLocked = isLockedPath(config.locked, "agents.defaults.model");
+  const modelsLocked = isLockedPath(config.locked, "agents.defaults.models");
+  const rewrittenModel = modelLocked
+    ? { value: defaults?.model, primary: undefined, runtimeRefs: [] as string[], changed: false }
+    : rewriteModelSelection(config);
+  const rewrittenModels = modelsLocked
+    ? { value: defaults?.models, migrated: [] as string[], runtimeRefs: [] as string[] }
+    : rewriteModelEntryMap(defaults?.models);
   const existingModels = (rewrittenModels.value ??
     defaults?.models ??
     {}) as NonNullable<AgentDefaultsModels>;
-  const nextModels = seedClaudeCliAllowlist(existingModels, [
-    ...rewrittenModel.runtimeRefs,
-    ...rewrittenModels.runtimeRefs,
-    ...rewrittenModels.migrated,
-  ]);
+  const nextModels = modelsLocked
+    ? existingModels
+    : seedClaudeCliAllowlist(existingModels, [
+        ...rewrittenModel.runtimeRefs,
+        ...rewrittenModels.runtimeRefs,
+        ...rewrittenModels.migrated,
+      ]);
   const defaultModel = rewrittenModel.primary ?? CLAUDE_CLI_CANONICAL_DEFAULT_MODEL_REF;
 
   return {
@@ -168,18 +202,22 @@ export function buildAnthropicCliMigrationResult(config: OpenClawConfig): Provid
       agents: {
         defaults: {
           ...(rewrittenModel.changed ? { model: rewrittenModel.value } : {}),
-          models: nextModels,
+          ...(modelsLocked ? {} : { models: nextModels }),
         },
       },
     },
     // Rewrites `claude-cli/*` -> `anthropic/*`; merge would keep stale keys.
-    replaceDefaultModels: true,
+    replaceDefaultModels: !modelsLocked,
     defaultModel,
     notes: [
       "Claude CLI auth detected; kept Anthropic model refs and selected the local Claude CLI runtime.",
       "Existing Anthropic auth profiles are kept for rollback.",
       ...(rewrittenModels.migrated.length > 0
         ? [`Migrated allowlist entries: ${rewrittenModels.migrated.join(", ")}.`]
+        : []),
+      ...(modelLocked ? ["agents.defaults.model is locked (cfg.locked); left it untouched."] : []),
+      ...(modelsLocked
+        ? ["agents.defaults.models is locked (cfg.locked); left it untouched."]
         : []),
     ],
   };
