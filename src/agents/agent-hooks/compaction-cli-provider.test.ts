@@ -107,4 +107,21 @@ describe("createClaudeCliCompactionProvider.summarize", () => {
       provider.summarize({ messages: [{ role: "user", content: "hi" }] }),
     ).rejects.toThrow(/exited with code/);
   });
+
+  it("skips non-plain-object messages (functions, symbols) instead of stringifying them", async () => {
+    registerFakeCliBackend(echoCmd);
+    const provider = createClaudeCliCompactionProvider(cfgWith({}));
+    const result = await provider.summarize({
+      messages: [
+        { role: "user", content: "keep me" },
+        () => "a function message should never reach the CLI prompt",
+        Symbol("also skip"),
+        42,
+      ],
+    });
+    expect(result).toContain("keep me");
+    expect(result).toContain("42");
+    expect(result).not.toContain("function");
+    expect(result).not.toContain("Symbol");
+  });
 });
