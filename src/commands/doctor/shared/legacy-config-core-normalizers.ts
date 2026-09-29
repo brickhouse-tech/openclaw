@@ -187,6 +187,9 @@ function migrateRuntimeAgent(
   // A locked models map stays untouched as one unit: key rewrites, runtime-policy enrichment,
   // and codex-cli pins all skip it.
   const modelsLocked = isLocked(`${path}.models`);
+  // Automations pin `payload.model` refs that are checked against this allowlist, so a
+  // locked allowlist must keep its legacy runtime refs verbatim or those jobs are rejected.
+  const modelPolicyAllowLocked = isLocked(`${path}.modelPolicy.allow`);
   const selected = migrateRuntimeSelection(agent, `${path}.model`, isLocked, blockedModelIdentities);
   if (selected.length) {
     changes.push(
@@ -240,7 +243,7 @@ function migrateRuntimeAgent(
       changes.push(`Moved ${path}.${key}.model to canonical refs with model runtime policy.`);
     }
   }
-  if (policy && policyRefs.length) {
+  if (policy && policyRefs.length && !modelPolicyAllowLocked) {
     policy.allow = allow;
     changes.push(`Moved ${path}.modelPolicy.allow legacy runtime refs to canonical provider refs.`);
   }
