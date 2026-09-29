@@ -255,3 +255,44 @@ describe("normalizeLegacyRuntimeModelRefs with locked paths", () => {
     expect(defaults.compaction).toEqual({ model: "anthropic/claude-haiku-4-5" });
   });
 });
+
+describe("normalizeLegacyRuntimeModelRefs with a locked modelPolicy.allow", () => {
+  const allow = [
+    "claude-cli/claude-haiku-4-5",
+    "anthropic/claude-haiku-4-5",
+    "openrouter/z-ai/glm-5.2",
+  ];
+
+  function buildPolicyCfg(locked?: string[]): OpenClawConfig {
+    return {
+      ...(locked ? { locked } : {}),
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-haiku-4-5" },
+          modelPolicy: { allow: [...allow] },
+        },
+      },
+    } as unknown as OpenClawConfig;
+  }
+
+  function allowOf(cfg: OpenClawConfig): string[] | undefined {
+    const defaults = (cfg.agents as unknown as { defaults: { modelPolicy?: { allow?: string[] } } })
+      .defaults;
+    return defaults.modelPolicy?.allow;
+  }
+
+  it("canonicalizes claude-cli/* allow entries when unlocked (baseline)", () => {
+    const next = normalizeLegacyRuntimeModelRefs(buildPolicyCfg(), []);
+    expect(allowOf(next)).not.toContain("claude-cli/claude-haiku-4-5");
+  });
+
+  it("keeps claude-cli/* allow entries verbatim when the allowlist is locked", () => {
+    const changes: string[] = [];
+    const next = normalizeLegacyRuntimeModelRefs(
+      buildPolicyCfg(["agents.defaults.modelPolicy.allow"]),
+      changes,
+    );
+    expect(allowOf(next)).toEqual(allow);
+    expect(changes.some((c) => c.includes("modelPolicy.allow legacy runtime refs"))).toBe(false);
+  });
+});

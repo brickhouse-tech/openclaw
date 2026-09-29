@@ -501,6 +501,9 @@ function normalizeLegacyRuntimeAgentContainer(
   );
   const modelsPath = `${path}.models`;
   const modelsLocked = isLocked(modelsPath);
+  // Automations pin `payload.model` refs that are checked against this allowlist, so a
+  // locked allowlist must keep its legacy runtime refs verbatim or those jobs are rejected.
+  const modelPolicyAllowLocked = isLocked(`${path}.modelPolicy.allow`);
 
   const model = normalizeLegacyRuntimeAgentModelConfig(
     raw.model,
@@ -597,7 +600,7 @@ function normalizeLegacyRuntimeAgentContainer(
     changes.push(`Removed ${path}.agentRuntime; runtime is now model scoped.`);
   }
 
-  if (modelPolicy.runtimes.size > 0) {
+  if (modelPolicy.runtimes.size > 0 && !modelPolicyAllowLocked) {
     next.modelPolicy = modelPolicy.value;
     changed = true;
     changes.push(`Moved ${path}.modelPolicy.allow legacy runtime refs to canonical provider refs.`);
