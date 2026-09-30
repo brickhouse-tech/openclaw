@@ -2,6 +2,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import { hasPreJournalStateSchema } from "./agent-deletion-journal-history.js";
 import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
@@ -26,7 +27,8 @@ export function readRetainedAgentDeletionsFromDatabase(
   database: DatabaseSync,
 ): AgentDeletionJournalDisposition {
   if (!tableExists(database, "agent_deletion_journal")) {
-    return "unavailable";
+    // A state database that predates the journal cannot have recorded deletions; lost history can.
+    return hasPreJournalStateSchema(database) ? [] : "unavailable";
   }
   return executeSqliteQuerySync(
     database,
